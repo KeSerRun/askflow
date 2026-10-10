@@ -1,0 +1,14 @@
+# 统一文本行尾为 LF（避免 Windows 下 CRLF 抖动）
+* text=auto
+*.py text eol=lf
+*.js text eol=lf
+*.ts text eol=lf
+*.vue text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.toml text eol=lf
+*.sql text eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf

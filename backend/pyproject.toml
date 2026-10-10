@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "askflow-backend"
+version = "0.2.0"
+description = "AskFlow 后端：LangGraph 状态机编排的 RAG Agent 问答系统（工具循环 + 工作流路由 + 断点续跑）"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "AskFlow Contributors"},
+]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    # Web 服务
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.20",
+    "PyJWT>=2.8",
+    # LLM / Embedding API
+    "openai>=1.50",
+    # 向量检索
+    "faiss-cpu>=1.10.0",
+    "numpy>=2.0",
+    # 文档加载与 OCR (仅 PDF 兜底路径使用 PyMuPDF + RapidOCR)
+    "PyMuPDF>=1.24",
+    # MinerU PDF 结构化解析
+    "requests>=2.31",
+    # 工具
+    "httpx>=0.28",
+"langgraph>=1.2",        # Agent 图状态机（tool-calling 编排 / 断点续跑）
+    "readability-lxml>=0.8",
+    "duckduckgo-search>=8.1.1",
+    "ddgs>=9.14.4",
+    # 基础设施（Docker 部署，可选——未配置时回退本地实现）
+    "SQLAlchemy>=2.0",      # ORM（SQLite / MySQL）
+    "PyMySQL>=1.1",         # MySQL 驱动
+    "redis>=5.0",           # Redis Cache / 状态
+    "pymilvus>=2.4",        # Milvus VectorStore
+    "minio>=7.2",           # MinIO ObjectStore
+    "pika>=1.3",            # RabbitMQ TaskQueue
+]
+
+[tool.setuptools.packages.find]
+# 顶层包（modules/infra/config/...）在 backend/ 下，无独立安装包
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP"]
+
+[tool.ruff.format]
+quote-style = "double"
+

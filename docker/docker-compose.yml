@@ -1,0 +1,215 @@
+# ════════════════════════════════════════════════════════════════
+# AskFlow 基础设施编排
+# 包含: MySQL + Redis + RabbitMQ + MinIO + etcd + Milvus
+#
+# 用法（在 docker/ 目录下）:
+#   cd docker && docker compose up -d
+#   # 或从项目根: docker compose -f docker/docker-compose.yml up -d
+#
+# 数据卷: 全部以 bind mount 挂载在 docker/data/<服务>/ 下，
+#         数据可见、可直接备份/迁移、便于随项目携带。
+#
+# 端口:
+#   MySQL      3306        (管理: 任意客户端)
+#   Redis      6379        (无管理界面)
+#   RabbitMQ   5672/15672  (管理台: http://localhost:15672)
+#   MinIO      9000/9001   (控制台: http://localhost:9001)
+#   Milvus     19530/9091
+# ════════════════════════════════════════════════════════════════
+
+name: askflow
+
+services:
+  # ────────────────────────────────────────────────
+  # MySQL 8 —— 用户/会话/对话历史 元数据
+  # ────────────────────────────────────────────────
+  mysql:
+    image: mysql:8.0
+    container_name: askflow-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-askflow}
+      MYSQL_USER: ${MYSQL_USER:-askflow}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-askflow_password}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "${MYSQL_PORT:-3306}:3306"
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$${MYSQL_ROOT_PASSWORD} --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ────────────────────────────────────────────────
+  # Redis 7 —— 工具缓存 / 任务进度 / 会话状态
+  # ────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: askflow-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ────────────────────────────────────────────────
+  # RabbitMQ —— 异步任务队列（PDF 解析/向量化/评估）
+  # ────────────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: askflow-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-askflow}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-askflow_password}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MGMT_PORT:-15672}:15672"
+    volumes:
+      - ./data/rabbitmq:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ────────────────────────────────────────────────
+  # MinIO —— 对象存储（上传 PDF + MinerU 解析产物 + Milvus 数据）
+  # ────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: askflow-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"   # API
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"  # 控制台
+    volumes:
+      - ./data/minio:/data
+
+  # 初始化 bucket（等待 MinIO 就绪后创建）
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_started
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set rag http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin}; do sleep 2; done;
+      mc mb --ignore-existing rag/rag-files;
+      mc mb --ignore-existing rag/milvus-data;
+      echo 'MinIO buckets ready: rag-files / milvus-data';
+      "
+
+  # ────────────────────────────────────────────────
+  # etcd —— Milvus 元数据存储（milvus standalone 依赖）
+  # ────────────────────────────────────────────────
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.14
+    container_name: askflow-etcd
+    restart: unless-stopped
+    environment:
+      - ETCD_AUTO_COMPACTION_MODE=revision
+      - ETCD_AUTO_COMPACTION_RETENTION=1000
+      - ETCD_QUOTA_BACKEND_BYTES=4294967296
+      - ETCD_SNAPSHOT_COUNT=50000
+    command: etcd -advertise-client-urls=http://127.0.0.1:2379 -listen-client-urls http://0.0.0.0:2379 --data-dir /etcd
+    volumes:
+      - ./data/etcd:/etcd
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ────────────────────────────────────────────────
+  # Milvus —— 向量数据库（复用上面的 MinIO 存储 segment）
+  # ────────────────────────────────────────────────
+  milvus:
+    image: milvusdb/milvus:v2.4.15
+    container_name: askflow-milvus
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_ENDPOINTS: etcd:2379
+      # 复用 MinIO（bucket: milvus-data），密钥需与 MinIO 一致
+      MINIO_ADDRESS: minio:9000
+      MINIO_ACCESSKEYID: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRETACCESSKEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKETNAME: milvus-data
+      MINIO_USESSL: "false"
+      # 关闭鉴权（开发环境），生产建议开启并配 COMMON_SECURITY_AUTHORIZATIONENABLED
+      COMMON_SECURITY_AUTHORIZATIONENABLED: "false"
+    ports:
+      - "${MILVUS_PORT:-19530}:19530"
+      - "9091:9091"
+    volumes:
+      - ./data/milvus:/var/lib/milvus
+    depends_on:
+      etcd:
+        condition: service_healthy
+      minio:
+        condition: service_started
+
+  # ────────────────────────────────────────────────
+  # Backend —— FastAPI 后端（生产容器化）
+  # 使用 profiles: 默认不启动（开发时本地跑 python app.py）；
+  # 生产用 `docker compose --profile prod up -d` 启用。
+  # 依赖 backend/.env 提供 LLM/Embedding/MinerU 密钥（可选，缺失则用默认）
+  # ────────────────────────────────────────────────
+  backend:
+    profiles: ["prod"]
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    container_name: askflow-backend
+    restart: unless-stopped
+    env_file:
+      - path: ../backend/.env
+        required: false
+    environment:
+      # 容器内以服务名互联（覆盖 .env 中的 127.0.0.1）
+      STORAGE_BACKEND: mysql
+      STORAGE_DB_URL: mysql+pymysql://rag:${MYSQL_PASSWORD:-askflow_password}@mysql:3306/${MYSQL_DATABASE:-askflow}
+      VECTOR_BACKEND: milvus
+      VECTOR_MILVUS_URI: http://milvus:19530
+      OBJECT_BACKEND: minio
+      OBJECT_MINIO_ENDPOINT: minio:9000
+      OBJECT_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      OBJECT_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      OBJECT_MINIO_BUCKET: rag-files
+      MQ_BACKEND: rabbitmq
+      MQ_RABBITMQ_URL: amqp://${RABBITMQ_USER:-askflow}:${RABBITMQ_PASSWORD:-askflow_password}@rabbitmq:5672/
+      CACHE_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      STORAGE_DATA_DIR: data
+      LOG_PATH: data/logs
+    ports:
+      - "${BACKEND_PORT:-11000}:11000"
+    volumes:
+      # 后端运行时数据（向量库/上传/日志）——挂载在 docker/data/backend
+      - ./data/backend:/workspace/backend/data
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      milvus:
+        condition: service_started

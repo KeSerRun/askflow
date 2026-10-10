@@ -1,0 +1,13 @@
+# Docker 构建上下文排除（避免把本地大目录塞入镜像）
+# 注意：frontend/dist 不排除——它是需要打进镜像的前端构建产物
+**/.venv/
+**/node_modules/
+**/__pycache__/
+**/*.pyc
+backend/data/
+docker/data/
+.git/
+logs/
+.ruff_cache/
+*.log
+.env

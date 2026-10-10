@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- 背景 -->
+  <rect width="512" height="512" rx="100" fill="#d4734e"/>
+
+  <!-- 核心圆 -->
+  <circle cx="256" cy="256" r="52" fill="#fff"/>
+  <circle cx="256" cy="256" r="22" fill="#d4734e"/>
+
+  <!-- 六边形节点 -->
+  <circle cx="256" cy="106" r="38" fill="#fff" opacity="0.9"/>
+  <circle cx="385.6" cy="181" r="38" fill="#fff" opacity="0.9"/>
+  <circle cx="385.6" cy="331" r="38" fill="#fff" opacity="0.9"/>
+  <circle cx="256" cy="406" r="38" fill="#fff" opacity="0.9"/>
+  <circle cx="126.4" cy="331" r="38" fill="#fff" opacity="0.9"/>
+  <circle cx="126.4" cy="181" r="38" fill="#fff" opacity="0.9"/>
+</svg>

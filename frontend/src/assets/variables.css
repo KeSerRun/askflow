@@ -1,0 +1,188 @@
+/* ============================================================
+   颜色变量表 —— 统一管理项目所有颜色值
+   引用方式：var(--color-xxx)
+   修改此文件后全局生效，无需在各组件中逐一修改。
+
+   暗色模式使用 [data-theme="dark"] 选择器覆盖。
+   ============================================================ */
+
+/* ========== 亮色模式（默认） ========== */
+:root,
+[data-theme="light"] {
+  /* 品牌色 / Primary */
+  --color-primary: #d4734e;
+  --color-primary-hover: #e08a65;
+  --color-primary-pressed: #c06542;
+  --color-primary-bg: rgba(212, 115, 78, 0.12);
+  --color-primary-bg-hover: rgba(212, 115, 78, 0.04);
+  --color-primary-bg-active: rgba(212, 115, 78, 0.08);
+  --color-primary-bg-subtle: rgba(212, 115, 78, 0.05);
+  --color-primary-glow: rgba(212, 115, 78, 0.15);
+  --color-primary-glow-20: rgba(212, 115, 78, 0.20);
+  --color-primary-selection: rgba(212, 115, 78, 0.25);
+  --color-primary-brand: #d4734c;
+
+  /* 页面背景 */
+  --color-bg-body: #f5f2ef;
+  --color-bg-white: #ffffff;
+  --color-bg-card: #ffffff;
+
+  /* 交互背景 */
+  --color-bg-hover: #f0edeb;
+  --color-bg-active: #fef3ef;
+  --color-bg-danger-hover: #fef0ef;
+  --color-bg-log-active: #fef3ef;
+
+  /* 遮罩 / 阴影 */
+  --color-overlay: rgba(0, 0, 0, 0.35);
+  --color-overlay-dark: rgba(0, 0, 0, 0.4);
+  --color-shadow-drawer: rgba(0, 0, 0, 0.15);
+  --color-shadow-card: rgba(0, 0, 0, 0.04);
+  --color-shadow-card-secondary: rgba(0, 0, 0, 0.03);
+
+  /* 文字色 */
+  --color-text-1: #1a1714;
+  --color-text-2: #4a4440;
+  --color-text-3: #6e6760;
+
+  /* 边框 / 分割线 */
+  --color-border: #d4cfc8;
+  --color-divider: #d4cfc8;
+  --color-border-light: #e0dcd6;
+
+  /* 语义色 */
+  --color-success: #18a058;
+  --color-warning: #f0a020;
+  --color-warning-alt: #f39c12;
+  --color-error: #d03050;
+  --color-danger: #e74c3c;
+
+  /* 滚动条 */
+  --color-scrollbar-thumb: rgba(120, 112, 104, 0.25);
+  --color-scrollbar-thumb-hover: rgba(120, 112, 104, 0.5);
+  --color-scrollbar-track: transparent;
+
+  /* 代码块 */
+  --color-code-bg: rgba(40, 40, 40, 0.96);
+  --color-code-text: #e4e4e7;
+
+  /* 行内代码 */
+  --color-inline-code-bg: rgba(120, 112, 104, 0.15);
+  --color-inline-code-text: #d4734e;
+
+  /* 弱化中性色 */
+  --color-neutral-wash: rgba(120, 112, 104, 0.06);
+  --color-neutral-wash-light: rgba(120, 112, 104, 0.03);
+  --color-neutral-wash-hover: rgba(120, 112, 104, 0.08);
+  --color-neutral-wash-code: rgba(120, 112, 104, 0.1);
+  --color-neutral-wash-inline: rgba(120, 112, 104, 0.15);
+
+  /* 用户头像（蓝色系） */
+  --color-user-avatar-bg: #dbeafe;
+  --color-user-avatar-text: #1d4ed8;
+
+  /* 日志代码块（深色） */
+  --color-log-bg: #0d1117;
+  --color-log-text: #e6edf3;
+
+  /* base.css 遗留变量 */
+  --vt-c-white: #ffffff;
+  --vt-c-white-soft: #f8f8f8;
+  --vt-c-white-mute: #f2f2f2;
+  --vt-c-black: #181818;
+  --vt-c-black-soft: #222222;
+  --vt-c-black-mute: #282828;
+  --vt-c-indigo: #2c3e50;
+
+  /* main.css 绿色强调色 */
+  --color-accent-green: hsla(160, 100%, 37%, 1);
+  --color-accent-green-bg: hsla(160, 100%, 37%, 0.2);
+}
+
+/* ========== 暗色模式 ========== */
+[data-theme="dark"] {
+  /* 品牌色（品牌色本身不变，alpha 类加亮以便在深底上可见） */
+  --color-primary: #d4734e;
+  --color-primary-hover: #e08a65;
+  --color-primary-pressed: #c06542;
+  --color-primary-bg: rgba(212, 115, 78, 0.20);
+  --color-primary-bg-hover: rgba(212, 115, 78, 0.10);
+  --color-primary-bg-active: rgba(212, 115, 78, 0.16);
+  --color-primary-bg-subtle: rgba(212, 115, 78, 0.08);
+  --color-primary-glow: rgba(212, 115, 78, 0.25);
+  --color-primary-glow-20: rgba(212, 115, 78, 0.30);
+  --color-primary-selection: rgba(212, 115, 78, 0.35);
+  --color-primary-brand: #d4734c;
+
+  /* 页面背景 */
+  --color-bg-body: #1c1917;
+  --color-bg-white: #292524;
+  --color-bg-card: #292524;
+
+  /* 交互背景 */
+  --color-bg-hover: #3f3a36;
+  --color-bg-active: #3c2a24;
+  --color-bg-danger-hover: #3c2020;
+  --color-bg-log-active: #3c2a24;
+
+  /* 遮罩 / 阴影（暗底上需要更黑或更半透明） */
+  --color-overlay: rgba(0, 0, 0, 0.6);
+  --color-overlay-dark: rgba(0, 0, 0, 0.7);
+  --color-shadow-drawer: rgba(0, 0, 0, 0.4);
+  --color-shadow-card: rgba(0, 0, 0, 0.25);
+  --color-shadow-card-secondary: rgba(0, 0, 0, 0.15);
+
+  /* 文字色 */
+  --color-text-1: #fafaf9;
+  --color-text-2: #a8a29e;
+  --color-text-3: #78716c;
+
+  /* 边框 / 分割线 */
+  --color-border: #57534e;
+  --color-divider: #57534e;
+  --color-border-light: #44403c;
+
+  /* 语义色（暗底上适当加亮） */
+  --color-success: #22c55e;
+  --color-warning: #eab308;
+  --color-warning-alt: #f59e0b;
+  --color-error: #ef4444;
+  --color-danger: #ef4444;
+
+  /* 滚动条（暗底上用浅色） */
+  --color-scrollbar-thumb: rgba(255, 255, 255, 0.2);
+  --color-scrollbar-thumb-hover: rgba(255, 255, 255, 0.35);
+  --color-scrollbar-track: transparent;
+
+  /* 代码块（保持不变，已经够暗） */
+  --color-code-bg: rgba(40, 40, 40, 0.96);
+  --color-code-text: #e4e4e7;
+
+  /* 行内代码 */
+  --color-inline-code-bg: rgba(255, 255, 255, 0.1);
+  --color-inline-code-text: #e08a65;
+
+  /* 弱化中性色（暗底上用浅色透明叠加） */
+  --color-neutral-wash: rgba(255, 255, 255, 0.06);
+  --color-neutral-wash-light: rgba(255, 255, 255, 0.03);
+  --color-neutral-wash-hover: rgba(255, 255, 255, 0.08);
+  --color-neutral-wash-code: rgba(255, 255, 255, 0.08);
+  --color-neutral-wash-inline: rgba(255, 255, 255, 0.12);
+
+  /* 用户头像（暗底上降低亮度） */
+  --color-user-avatar-bg: #1e3a5f;
+  --color-user-avatar-text: #93c5fd;
+
+  /* 日志代码块（保持不变） */
+  --color-log-bg: #0d1117;
+  --color-log-text: #e6edf3;
+
+  /* base.css 遗留变量 */
+  --vt-c-white: #292524;
+  --vt-c-white-soft: #2a2a2e;
+  --vt-c-white-mute: #3f3a36;
+  --vt-c-black: #181818;
+  --vt-c-black-soft: #222222;
+  --vt-c-black-mute: #282828;
+  --vt-c-indigo: #a8a29e;
+}
