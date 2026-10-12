@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from config import conf
-from infra.logger import logger
+from infra.util.logger import logger
 
 router = APIRouter(tags=["frontend"])
 
@@ -23,36 +23,29 @@ _INDEX = conf.web_index_file
 
 
 def _load_index() -> str | None:
-    """读取前端首页 HTML；未构建返回 None。"""
+    """读取前端首页 HTML；未构建返回 None（每次请求实时读，构建后无需重启）。"""
     if os.path.exists(_INDEX):
-        logger.debug(f"找到 index.html: {_INDEX}")
         with open(_INDEX, "r", encoding="utf-8") as f:
             return f.read()
-    logger.warning(
-        f"未找到前端构建产物 {_INDEX},/ 与静态资源将不可用。"
-        "运行 `cd frontend && npm run build` 后重启即可启用。"
-    )
     return None
 
 
-_HTML = _load_index()
-
-
 @router.get("/")
-async def index():
+def index():
     """返回前端首页 HTML。
 
     Raises:
         HTTPException 404: 前端未构建。
     """
-    if _HTML is None:
+    html = _load_index()
+    if html is None:
         raise HTTPException(status_code=404, detail="frontend not built; run `cd frontend && npm run build`")
-    return HTMLResponse(content=_HTML, status_code=200)
+    return HTMLResponse(content=html, status_code=200)
 
 
 def mount_static(app) -> None:
     """挂载 `/assets` 与前端根目录（仅当前端已构建）。"""
-    if _HTML is None:
+    if _load_index() is None:
         return
     if os.path.isdir(_ASSETS):
         app.mount("/assets", StaticFiles(directory=_ASSETS), name="assets")

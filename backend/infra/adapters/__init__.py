@@ -4,7 +4,6 @@
 """
 
 from .cache import InMemoryCache, RedisCache  # noqa: F401
-from .object import LocalObjectStore, MinioObjectStore  # noqa: F401
-from .queue import InProcessTaskQueue  # noqa: F401
+from .object import MinioObjectStore  # noqa: F401
 
-__all__ = ["LocalObjectStore", "MinioObjectStore", "InMemoryCache", "RedisCache", "InProcessTaskQueue"]
+__all__ = ["MinioObjectStore", "InMemoryCache", "RedisCache"]

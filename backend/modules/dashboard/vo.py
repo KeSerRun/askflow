@@ -17,17 +17,16 @@ def overview(domain: dict, request_stats=None, tool_call_counts=None) -> JSONRes
     return json(payload)
 
 
+def ok(payload: dict) -> JSONResponse:
+    """通用 JSON 响应。"""
+    return json(payload)
+
+
 def _request_stats(rs) -> dict:
+    """接收 RequestLogService.stats() 的 dict；缺省返回空统计。"""
     if not rs:
         return {
             "total_requests": 0, "total_errors": 0,
-            "by_method": {}, "by_path": [],
-            "start_time": time.time(), "uptime_seconds": 0,
+            "by_method": {}, "start_time": time.time(), "uptime_seconds": 0,
         }
-    return {
-        "total_requests": rs.total_requests,
-        "total_errors": rs.total_errors,
-        "by_method": dict(rs.by_method),
-        "start_time": rs.start_time,
-        "uptime_seconds": int(time.time() - rs.start_time),
-    }
+    return dict(rs)

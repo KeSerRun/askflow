@@ -25,11 +25,9 @@
 6. **工具优先级**：按以下顺序尝试，前者无法满足时再降级。
    - **检索** → `search_knowledge_base`（首选，覆盖所有类型）
    - **补全片段** → `read_chunk_context`（检索结果不完整时）
-   - **浏览目录** → `read_document_titles`（文档太长时先看结构）
-   - **定位章节** → `read_section`（按标题读正文）
-   - **通读全文** → `read_full_document`（以上都不够时再读全文）
+   - **通读全文** → `read_full_document`（需要完整内容时读全文）
    - **联网搜索** → `web_search`（知识库没有时）
-   - **列表/归档** → `list_documents` / `read_archive`（按需调用）
+   - **列表/归档** → `list_documents`（按需调用）
 
 ## 输出规范
 
@@ -52,9 +50,3 @@
    PLI_{i,t} = \left[\sum_{k=0}^{11} \left\{ \frac{\max(P_{i,t-k} - P_{i,t-k-1}, 0)}{P_{i,t-k} - P_{i,t-k-1}} \right\} / 12 \right] \times 100
    $$
    ```
-
----
-
-## 工作流指令
-
-如果 system message 中包含「⚠️ 必须遵守的工作流」段落，**必须严格按照该工作流的分步指令执行**，工作流的优先级高于以上通用规则。工作流内已定义的步骤不得跳过、合并或改变顺序。

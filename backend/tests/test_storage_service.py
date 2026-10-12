@@ -1,58 +1,64 @@
-"""StorageService 单测：配额判定与目录统计。"""
+"""StorageService 单测：目录配额判定与目录统计。"""
 
 import os
 import shutil
 import tempfile
 import unittest
 
-from modules.document.storage_service import StorageService
+from core.app_errors import QuotaExceeded
+from modules.document.service import StorageService
 
 
 class StorageServiceTest(unittest.TestCase):
     def setUp(self):
-        self.data_dir = tempfile.mkdtemp()
-        self.upload_dir = os.path.join(self.data_dir, "uploads", "alice")
-        os.makedirs(self.upload_dir, exist_ok=True)
+        self.dir = tempfile.mkdtemp()
+        self.svc = StorageService()
 
     def tearDown(self):
-        shutil.rmtree(self.data_dir, ignore_errors=True)
+        shutil.rmtree(self.dir, ignore_errors=True)
 
-    def _write(self, name: str, size: int):
-        with open(os.path.join(self.upload_dir, name), "wb") as f:
-            f.write(b"x" * size)
+    def _write(self, name, nbytes):
+        with open(os.path.join(self.dir, name), "wb") as f:
+            f.write(b"x" * nbytes)
 
-    def test_admin_unlimited(self):
-        svc = StorageService(data_dir=self.data_dir, max_user_mb=1)
-        ok, current, max_mb = svc.check("alice", "admin")
-        self.assertTrue(ok)
-        self.assertEqual(current, 0)
-
-    def test_disabled_limit(self):
-        svc = StorageService(data_dir=self.data_dir, max_user_mb=0)
-        ok, _, max_mb = svc.check("alice", "user")
+    def test_unlimited_when_max_zero(self):
+        self._write("a.bin", 3 * 1024 * 1024)
+        ok, _, max_mb = self.svc.check(self.dir, 0)
         self.assertTrue(ok)
         self.assertEqual(max_mb, 0)
 
     def test_under_limit(self):
-        self._write("a.pdf", 300 * 1024)
-        svc = StorageService(data_dir=self.data_dir, max_user_mb=1)  # 1 MB
-        ok, current, max_mb = svc.check("alice", "user")
+        self._write("a.bin", 512 * 1024)
+        ok, cur, max_mb = self.svc.check(self.dir, 1)
         self.assertTrue(ok)
-        self.assertGreater(current, 0)
+        self.assertLess(cur, 1)
         self.assertEqual(max_mb, 1)
 
-    def test_over_limit_with_additional_bytes(self):
-        svc = StorageService(data_dir=self.data_dir, max_user_mb=1)
-        ok, current, max_mb = svc.check("alice", "user", additional_bytes=2 * 1024 * 1024)
+    def test_over_limit(self):
+        self._write("a.bin", 2 * 1024 * 1024)  # 2MB > 1MB
+        ok, _, max_mb = self.svc.check(self.dir, 1)
         self.assertFalse(ok)
-        self.assertGreaterEqual(current, max_mb)
+        self.assertEqual(max_mb, 1)
 
-    def test_only_counts_files_not_dirs(self):
-        os.makedirs(os.path.join(self.upload_dir, "chunk_out"), exist_ok=True)
-        svc = StorageService(data_dir=self.data_dir, max_user_mb=1)
-        ok, current, _ = svc.check("alice", "user")
-        self.assertTrue(ok)
-        self.assertEqual(current, 0)
+    def test_additional_bytes_counted(self):
+        self._write("a.bin", 512 * 1024)
+        ok, _, _ = self.svc.check(self.dir, 1, additional_bytes=1024 * 1024)
+        self.assertFalse(ok)
+
+    def test_enforce_raises(self):
+        self._write("a.bin", 2 * 1024 * 1024)
+        with self.assertRaises(QuotaExceeded):
+            self.svc.enforce(self.dir, 1)
+
+    def test_usage_reports_limit(self):
+        self._write("a.bin", 1024)
+        usage = self.svc.usage(self.dir, 1)
+        self.assertEqual(usage["max_mb"], 1)
+        self.assertTrue(usage["limit_enabled"])
+        self.assertTrue(usage["ok"])
+
+    def test_dir_size_bytes_missing_dir(self):
+        self.assertEqual(self.svc.dir_size_bytes(os.path.join(self.dir, "nope")), 0)
 
 
 if __name__ == "__main__":

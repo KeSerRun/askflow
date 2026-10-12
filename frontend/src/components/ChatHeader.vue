@@ -44,6 +44,20 @@
         </n-tag>
       </n-button>
 
+      <!-- 管理员：进入管理后台 -->
+      <n-button
+        v-if="userStore.role === 'admin'"
+        quaternary
+        size="small"
+        class="admin-btn"
+        @click="router.push('/admin/dashboard')"
+      >
+        <template #icon>
+          <n-icon :component="GridOutline" />
+        </template>
+        <span class="admin-btn-text">管理后台</span>
+      </n-button>
+
       <n-tooltip placement="bottom">
         <template #trigger>
           <n-button quaternary circle size="small" @click="$emit('logout')">
@@ -59,6 +73,7 @@
 </template>
 
 <script setup>
+import { useRouter } from 'vue-router'
 import {
   NButton,
   NIcon,
@@ -73,10 +88,12 @@ import {
   MenuOutline,
   SunnyOutline,
   MoonOutline,
+  GridOutline,
 } from '@vicons/ionicons5'
 import { useUserStore } from '@/stores/user'
 import { useThemeStore } from '@/stores/theme'
 
+const router = useRouter()
 const userStore = useUserStore()
 const themeStore = useThemeStore()
 
@@ -143,11 +160,13 @@ defineEmits(['open-doc-manager', 'logout', 'toggle-sidebar'])
     gap: 4px;
   }
 
-  .doc-btn-text {
+  .doc-btn-text,
+  .admin-btn-text {
     display: none;
   }
 
-  .doc-btn {
+  .doc-btn,
+  .admin-btn {
     padding: 0 !important;
     min-width: 32px;
   }

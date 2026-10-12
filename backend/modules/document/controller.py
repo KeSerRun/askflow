@@ -1,29 +1,27 @@
-"""文档管理接口：上传 / 向量化 / 列出 / 清除 / 下载（Controller）
+"""文档接口（Controller）：
 
-业务（文件名校验/保存/入库/清理/路径与图片解析/进度编排）全部在
-``modules.DocumentService``；本层只做 HTTP：读取 multipart、鉴权、组装响应。
+- **会话附件暂存**（对话页）：上传 / 列出 / 下载 / 删除，按 ``session_id`` 隔离，
+  只暂存（MinIO）、**不解析不入向量库**（解析产物为 txt 供会话内工具检索）；
+- **图片直链**：答案中引用的 MinerU 图片（``/images/...`` 与 ``/documents/image/...``）。
+
+业务（文件名校验 / 对象存储读写 / 图片解析）全部在 ``modules.DocumentService``；
+系统文档的 MinerU 解析 + 向量化由管理端 ``/api/admin/database/upload`` 触发。
 """
 
-import glob
-import mimetypes
-from pathlib import Path
 from typing import List
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+import re as _re
 
-from config import conf
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+
+from core.concurrency import to_thread
 from core.deps import (
-    current_user,
     document_service,
-    media_identity,
-    optional_session_id,
-    session_id_required,
-    storage_service,
+    require_auth,
+    require_media_auth,
+    require_session_id,
 )
-from .dto import AddDocumentsBody, SourcesBody
 from . import vo as views
-from core.responses import sse_event
 
 router = APIRouter(prefix="/api", tags=["documents"])
 
@@ -34,139 +32,137 @@ media_router = APIRouter(prefix="/images", tags=["media"])
 
 
 @media_router.get("/{img_name:path}")
-async def serve_root_image(request: Request, img_name: str, token: str = Query(None)):
+def serve_root_image(request: Request, img_name: str, token: str = Query(None)):
     """搜索并返回图片。处理 LLM 输出的 /images/hash.jpg 格式。
 
     Raises:
-        HTTPException 401: token 缺失或无效（media_identity）。
+        HTTPException 401: token 缺失或无效（require_media_auth）。
         HTTPException 404: 图片未找到。
     """
-    media_identity(request, token)
-
-    img_name = img_name.rstrip("/")
-    if img_name.startswith("images/"):
-        img_name = img_name[7:]
-
-    search_pattern = str(Path(conf.storage_data_dir) / "uploads" / "*" / "chunk_out" / "*" / "images" / img_name)
-    candidates = glob.glob(search_pattern)
-    if not candidates:
+    require_media_auth(request, token)
+    found = views.inline_bytes_global(document_service, img_name)
+    if found is None:
         raise HTTPException(status_code=404, detail="image not found")
-
-    target = Path(candidates[0]).resolve()
-    media_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
-    return FileResponse(path=str(target), media_type=media_type)
+    return found
 
 
-def _sse(events):
-    """把服务产出的 dict 事件流格式化为 SSE 行。"""
-    for event in events:
-        yield sse_event(event)
+# ── 会话附件暂存（对话页上传，仅落盘） ──
 
-
-@router.post("/add_documents")
-async def add_documents(body: AddDocumentsBody, user: dict = Depends(current_user)):
-    """添加文档到检索器（仅作用于自己的分区）。
-
-    Raises:
-        AppError 403: 路径穿越。
-        AppError 400: 路径不存在。
-    """
-    document_service.add_from_path(user["username"], body.documents_path)
-    return views.added()
-
-
-@router.post("/clear_documents")
-async def clear_documents(
-    session_id: str | None = Depends(optional_session_id),
-    user: dict = Depends(current_user),
-):
-    """清除当前用户自己的所有文档（向量 + 原文件 + chunk 产物）。"""
-    document_service.clear_all(user["username"], session_id=session_id)
-    return views.cleared()
-
-
-@router.post("/clear_chosen_documents")
-async def clear_chosen_documents(
-    body: SourcesBody,
-    session_id: str | None = Depends(optional_session_id),
-    user: dict = Depends(current_user),
-):
-    """清除指定来源的文档（向量 + 原文件 + 对应 chunk 产物）。"""
-    document_service.clear_sources(user["username"], body.sources, session_id=session_id)
-    return views.chosen_cleared()
-
-
-@router.post("/upload")
-async def upload_file(
+@router.post("/session_files/upload")
+async def upload_session_files(
     files: List[UploadFile] = File(...),
-    session_id: str = Depends(session_id_required),
-    user: dict = Depends(current_user),
+    session_id: str = Depends(require_session_id),
+    user: dict = Depends(require_auth),
 ):
-    """上传文件到当前用户的暂存目录（仅 PDF，不解析）。
+    """上传附件到当前会话暂存目录（只落盘、不入向量库），随后后台 MinerU 解析为 txt。
 
     Raises:
-        HTTPException 400: 缺少 session_id（依赖注入校验）。
-        AppError 400: 文件名非法或非 PDF。
+        HTTPException 400: 缺少 session_id。
+        AppError 413: 会话附件总大小超过上限。
+        AppError 400: 文件名非法。
     """
     pairs = [(file.filename, await file.read(), file.content_type) for file in files]
-    saved = document_service.save_uploads(user["username"], pairs, session_id=session_id)
-    return views.upload_result(saved)
+    saved = await to_thread(
+        document_service.save_session_files, user["user_id"], session_id, pairs
+    )
+    document_service.schedule_session_parse(
+        user["user_id"], session_id, [s["filename"] for s in saved]
+    )
+    return views.session_files(
+        saved,
+        document_service.session_usage(user["user_id"], session_id),
+    )
 
 
-@router.post("/upload_embeddings")
-async def upload_embeddings(
-    files: List[UploadFile] = File(...),
-    session_id: str = Depends(session_id_required),
-    user: dict = Depends(current_user),
-    stream: bool = Query(False, description="是否 SSE 流式返回处理进度"),
+@router.get("/session_files/parse_status")
+def session_parse_status(
+    session_id: str = Depends(require_session_id),
+    user: dict = Depends(require_auth),
 ):
-    """上传文件并立即向量化入库到当前用户分区。
-
-    Raises:
-        HTTPException 400: 缺少 session_id（依赖注入校验）。
-        AppError 400: 文件名非法或非 PDF。
-        AppError 413: 存储空间不足。
-    """
-    files_data = [(file.filename, await file.read(), file.content_type) for file in files]
-    role = user.get("role", "user")
-
-    if stream:
-        return views.sse_upload(_sse(document_service.iter_upload_progress(user["username"], session_id, files_data, role)))
-
-    return views.upload_result(document_service.upload_and_index(user["username"], files_data, role=role, session_id=session_id))
+    """返回当前会话各附件的 MinerU 解析状态（pending/parsing/success/failed/skipped）。"""
+    return views.session_files_parse(
+        document_service.session_parse_status(user["user_id"], session_id)
+    )
 
 
-@router.get("/documents/{username}")
-async def get_documents(username: str, user: dict = Depends(current_user)):
-    """获取当前用户分区下的文档列表（路径 username 仅用于路由兼容）。"""
-    return views.list_(document_service.list_documents(user["username"]))
+@router.get("/session_files")
+def list_session_files(
+    session_id: str = Depends(require_session_id),
+    user: dict = Depends(require_auth),
+):
+    """列出当前会话暂存文件与用量。"""
+    files = document_service.list_session_files(user["user_id"], session_id)
+    return views.session_files(files, document_service.session_usage(user["user_id"], session_id))
 
 
-@router.get("/documents/storage/info")
-async def get_storage_info(user: dict = Depends(current_user)):
-    """获取当前用户的存储使用情况。"""
-    return views.storage_info(storage_service.usage(user["username"], user.get("role", "user")))
-
-
-@router.get("/documents/file/{filename:path}")
-async def download_document(
-    request: Request,
+@router.delete("/session_files/{filename:path}")
+def delete_session_file(
     filename: str,
-    token: str = Query(None, description="JWT token（无法携带 Header 时用）"),
+    session_id: str = Depends(require_session_id),
+    user: dict = Depends(require_auth),
 ):
-    """返回当前用户上传过的原文件（inline）。
+    """删除当前会话里的某个附件。"""
+    document_service.delete_session_file(user["user_id"], session_id, filename)
+    return views.session_file_deleted(filename)
+
+
+@router.delete("/session_files")
+def clear_session_files(
+    session_id: str = Depends(require_session_id),
+    user: dict = Depends(require_auth),
+):
+    """清空当前会话的全部附件。"""
+    document_service.clear_session_files(user["user_id"], session_id)
+    return views.session_files_cleared()
+
+
+@router.get("/session_files/file/{filename:path}")
+def download_session_file(
+    filename: str,
+    session_id: str = Depends(require_session_id),
+    user: dict = Depends(require_auth),
+):
+    """下载 / 预览会话暂存的原文件（inline，从对象存储读取）。
 
     Raises:
-        HTTPException 401: token 缺失/无效。
         AppError 403/404: 路径穿越 / 文件不存在。
     """
-    payload = media_identity(request, token)
-    path = document_service.resolve_user_file(payload.get("username", ""), filename)
-    return views.inline_path(path)
+    data, name = document_service.read_session_file(user["user_id"], session_id, filename)
+    return views.inline_bytes(data, name)
+
+
+# ── 图片直链（按 doc_stem / 全局搜索；从对象存储读取） ──
+
+@router.get("/documents/query_image")
+def serve_query_image(
+    request: Request,
+    key: str = Query(...),
+    token: str = Query(None),
+):
+    """提供对话页粘贴图片（``sessions/{user_id}/{session_id}/query_img/...``）；仅属主或管理员可读。
+
+    Raises:
+        HTTPException 400: key 非法。
+        HTTPException 401: token 无效。
+        HTTPException 403: 非本人/非管理员。
+        HTTPException 404: 图片不存在。
+    """
+    payload = require_media_auth(request, token)
+    m = _re.match(r"^sessions/(\d+)/", str(key or "").lstrip("/"))
+    if not m:
+        raise HTTPException(status_code=400, detail="非法图片键")
+    owner = int(payload.get("user_id") or 0)
+    if owner != int(m.group(1)) and payload.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Forbidden")
+    found = document_service.read_query_image(key)
+    if found is None:
+        raise HTTPException(status_code=404, detail="image not found")
+    data, _media_type, name = found
+    return views.inline_bytes(data, name)
 
 
 @router.get("/documents/image/{doc_stem}/{img_name:path}")
-async def serve_mineru_image(
+def serve_mineru_image(
     request: Request,
     doc_stem: str,
     img_name: str,
@@ -178,12 +174,12 @@ async def serve_mineru_image(
         HTTPException 401: token 无效。
         AppError 404: 图片未找到。
     """
-    media_identity(request, token)
-    return views.inline_path(document_service.find_image(doc_stem, img_name))
+    require_media_auth(request, token)
+    return views.mineru_image(document_service, doc_stem, img_name)
 
 
 @router.get("/documents/image/{img_name:path}")
-async def serve_mineru_image_global(
+def serve_mineru_image_global(
     request: Request,
     img_name: str,
     token: str = Query(None),
@@ -194,5 +190,5 @@ async def serve_mineru_image_global(
         HTTPException 401: token 无效。
         AppError 404: 图片未找到。
     """
-    media_identity(request, token)
-    return views.inline_path(document_service.find_image_global(img_name))
+    require_media_auth(request, token)
+    return views.inline_bytes_global(document_service, img_name)

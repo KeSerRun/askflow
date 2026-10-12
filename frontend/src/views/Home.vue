@@ -1,5 +1,5 @@
 <template>
-  <div class="chat-container">
+  <div class="chat-container" @dragover.prevent @drop.prevent="handlePageDrop">
     <SessionSidebar
       :sessions="sessionList"
       :current-session-id="currentSessionId"
@@ -20,6 +20,21 @@
         @toggle-sidebar="drawerOpen = !drawerOpen"
       />
 
+      <!-- 规划期任务清单（置顶：模型说"见上方清单"时真实可见；set_todolist / check_todo 实时同步） -->
+      <div v-if="todolistItems.length" class="todo-panel">
+        <div class="todo-header">📋 任务清单</div>
+        <div class="todo-list">
+          <div
+            v-for="(it, i) in todolistItems" :key="it.id || i"
+            class="todo-item" :class="{ done: it.done }"
+          >
+            <span class="todo-box">{{ it.done ? '✓' : '○' }}</span>
+            <span class="todo-text">{{ it.text }}</span>
+            <span v-if="it.done" class="todo-done-tag">完成</span>
+          </div>
+        </div>
+      </div>
+
       <MessageList
         ref="messageListRef"
         :messages="messages"
@@ -28,15 +43,8 @@
         :status-text="agentStatus.visible ? agentStatus.text : ''"
       />
 
-      <!-- 工具选择栏 -->
+      <!-- 选择栏 -->
       <div class="toolbar-row">
-        <n-select
-          v-model:value="selectedWorkflow"
-          :options="workflowOptions"
-          size="small"
-          style="width: 130px"
-          placeholder="工作流"
-        />
         <n-select
           v-model:value="userStore.answerStyle"
           :options="styleOptions"
@@ -45,9 +53,24 @@
           style="width: 130px"
           placeholder="风格"
         />
+        <n-select
+          v-model:value="selectedWorkflow"
+          :options="workflowOptions"
+          size="small"
+          style="width: 130px"
+          placeholder="工作流"
+        />
+
+        <!-- 上下文使用情况（最小化：仅一行百分比，详请在 tooltip） -->
+        <span
+          v-if="contextUsage"
+          class="context-usage"
+          :title="`上下文 ${fmtChars(contextUsage.used)} / ${fmtChars(contextUsage.window)} 字符`"
+        >上下文 {{ contextUsage.pct }}%</span>
       </div>
 
       <ChatInput
+        ref="chatInputRef"
         :is-loading="isLoading"
         :is-uploading="isUploading"
         @send="sendQuestion"
@@ -66,17 +89,47 @@
     <DocManagerModal
       :is-open="isDocModalOpen"
       :documents="documentList"
+      :storage="documentUsage"
       :is-deleting="isDeleting"
+      :parse-status="parseStatus"
       @close="closeDocManager"
       @delete="confirmDeleteDocs"
       @open="openDocument"
       @refresh="fetchDocuments"
     />
+
+    <!-- 澄清选择框：模型 ask_user_for_clarification（含自定义） -->
+    <n-modal v-model:show="clarifVisible" preset="card" title="❓ 需要确认" style="width: 520px"
+      :mask-closable="!clarifSubmitting">
+      <div class="clarif-question">{{ clarification?.question }}</div>
+      <n-radio-group v-if="clarification?.options?.length" v-model:value="clarifChoice" :disabled="clarifSubmitting">
+        <n-space vertical>
+          <n-radio v-for="(o, i) in clarification.options" :key="i" :value="String(o)">{{ o }}</n-radio>
+          <n-radio value="__custom__">自定义…</n-radio>
+        </n-space>
+      </n-radio-group>
+      <n-input
+        v-model:value="clarifCustom"
+        type="textarea"
+        :rows="2"
+        placeholder="输入你的回答…"
+        style="margin-top: 10px"
+        :disabled="clarifSubmitting"
+        @keydown.enter.prevent="clarifChoice === '__custom__' && submitClarification()"
+      />
+      <template #footer>
+        <n-space justify="end">
+          <n-button :loading="clarifSubmitting" type="primary" :disabled="!clarifValueReady" @click="submitClarification">
+            提交并继续
+          </n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage, useDialog, useLoadingBar } from 'naive-ui'
 
@@ -91,7 +144,7 @@ import ChatInput from '@/components/ChatInput.vue'
 import DocManagerModal from '@/components/DocManagerModal.vue'
 
 // Naive UI 组件
-import { NSelect } from 'naive-ui'
+import { NSelect, NModal, NInput, NButton, NSpace, NRadio, NRadioGroup, NText } from 'naive-ui'
 
 const router = useRouter()
 const userStore = useUserStore()
@@ -113,10 +166,16 @@ const messageListRef = ref(null)
 const sessionList = ref([])
 const currentSessionId = ref('')
 
-const ALLOWED_EXTENSIONS = ['pdf', 'txt', 'md']
-const MAX_FILE_SIZE = 100 * 1024 * 1024
+// MinerU 支持的格式 + 常规文本（txt/md 仅暂存，不解析）+ Office 文档
+const ALLOWED_EXTENSIONS = [
+  'pdf', 'txt', 'md',
+  'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff', 'gif', 'ico',
+  'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx',
+]
+const MAX_FILE_SIZE = 20 * 1024 * 1024  // 与后端「会话附件总大小上限」保持一致
 
 const documentList = ref([])
+const documentUsage = ref({ current_mb: 0, max_mb: 0, limit_enabled: false })
 const isDocModalOpen = ref(false)
 const isDeleting = ref(false)
 const drawerOpen = ref(false)
@@ -148,14 +207,60 @@ const currentSessionTitle = computed(() => {
 
 // --- 文档管理 ---
 const fetchDocuments = async () => {
+  if (!currentSessionId.value) {
+    documentList.value = []
+    documentUsage.value = { current_mb: 0, max_mb: 0, limit_enabled: false }
+    parseStatus.value = {}
+    return
+  }
   try {
-    const response = await axios.get(`/api/documents/${userStore.username}`)
+    const response = await axios.get('/api/session_files', {
+      headers: { 'X-Session-ID': currentSessionId.value },
+    })
     if (response.status === 200) {
-      documentList.value = response.data.documents || []
+      documentList.value = (response.data.files || []).map((f) => f.name)
+      if (response.data.usage) documentUsage.value = response.data.usage
     }
   } catch (error) {
-    console.error('获取文档列表失败:', error)
+    console.error('获取会话附件失败:', error)
   }
+}
+
+// ── 附件 MinerU 解析状态（对话页上传 → 解析为 txt，不入向量库） ──
+const parseStatus = ref({})
+let parseTimer = null
+const statusCounts = computed(() => {
+  const c = { pending: 0, parsing: 0, success: 0, failed: 0, skipped: 0 }
+  for (const s of Object.values(parseStatus.value)) {
+    if (c[s.status] != null) c[s.status] += 1
+  }
+  return c
+})
+
+const fetchParseStatus = async () => {
+  if (!currentSessionId.value) return
+  try {
+    const res = await axios.get('/api/session_files/parse_status', {
+      headers: { 'X-Session-ID': currentSessionId.value },
+    })
+    parseStatus.value = res.data?.files || {}
+    const busy = statusCounts.value.parsing + statusCounts.value.pending
+    if (busy > 0) {
+      startParsePolling()
+    } else {
+      stopParsePolling()
+    }
+  } catch (error) {
+    console.error('获取附件解析状态失败:', error)
+  }
+}
+
+function startParsePolling() {
+  if (parseTimer) return
+  parseTimer = setInterval(fetchParseStatus, 2000)
+}
+function stopParsePolling() {
+  if (parseTimer) { clearInterval(parseTimer); parseTimer = null }
 }
 
 const openDocManager = () => {
@@ -167,28 +272,27 @@ const closeDocManager = () => {
   isDocModalOpen.value = false
 }
 
-// 双击文档: blob + 新标签（原生 PDF 预览）
+// 双击文档: 直接下载（blob + <a download>），no 再依赖新标签预览/弹窗
 const openDocument = async (docName) => {
   try {
     const response = await axios.get(
-      `/api/documents/file/${encodeURIComponent(docName)}`,
-      { responseType: 'blob' }
+      `/api/session_files/file/${encodeURIComponent(docName)}`,
+      {
+        responseType: 'blob',
+        headers: { 'X-Session-ID': currentSessionId.value },
+      }
     )
     const url = URL.createObjectURL(response.data)
-    const win = window.open(url, '_blank')
-    if (!win) {
-      // 弹窗被拦截时回退为下载
-      const a = document.createElement('a')
-      a.href = url
-      a.download = docName
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-    }
-    // 留一点时间让新窗口加载完再释放
+    const a = document.createElement('a')
+    a.href = url
+    a.download = docName
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    // 留一点时间让下载开始后再释放
     setTimeout(() => URL.revokeObjectURL(url), 60_000)
   } catch (error) {
-    const detail = error.response?.status === 404 ? '原文件已不存在' : '打开失败'
+    const detail = error.response?.status === 404 ? '原文件已不存在' : '下载失败'
     message.error(detail)
   }
 }
@@ -206,22 +310,18 @@ const confirmDeleteDocs = (docsToDelete) => {
 const deleteSelectedDocs = async (docsToDelete) => {
   isDeleting.value = true
   try {
-    const response = await axios.post(
-      '/api/clear_chosen_documents',
-      { sources: docsToDelete },
-      {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Session-ID': currentSessionId.value || '',
-        },
-      }
-    )
-    if (response.status === 200) {
-      documentList.value = documentList.value.filter(
-        (docName) => !docsToDelete.includes(docName)
+    await Promise.all(
+      docsToDelete.map((name) =>
+        axios.delete(`/api/session_files/${encodeURIComponent(name)}`, {
+          headers: { 'X-Session-ID': currentSessionId.value },
+        })
       )
-      message.success('文档删除成功')
-    }
+    )
+    documentList.value = documentList.value.filter(
+      (docName) => !docsToDelete.includes(docName)
+    )
+    message.success('附件删除成功')
+    await fetchDocuments()
   } catch (error) {
     const detail = error.response?.data?.detail || '删除失败'
     message.error(detail)
@@ -237,7 +337,7 @@ const validateFile = (file) => {
     return { valid: false, msg: `不支持的文件类型：${file.name}` }
   }
   if (file.size > MAX_FILE_SIZE) {
-    return { valid: false, msg: `${file.name} 大小超过 100MB` }
+    return { valid: false, msg: `${file.name} 大小超过 20MB（会话上限）` }
   }
   return { valid: true }
 }
@@ -329,9 +429,25 @@ const switchSession = async (id) => {
   }
 }
 
+// 用户消息清洗：剥离后端注入的"附带图片"说明块，还原为可见文本 + 附带图片标注
+function cleanUserMessage(content = '') {
+  const text = String(content || '')
+  const m = text.match(/\n\n\[用户附带了图片，图片对象键：(.*?)。/)
+  if (!m) return { role: 'user', content: text }
+  let attach
+  try {
+    const arr = JSON.parse(m[1])
+    attach = Array.isArray(arr) && arr.length ? arr : undefined
+  } catch (e) {
+    attach = undefined
+  }
+  return { role: 'user', content: text.slice(0, m.index), _attachments: attach }
+}
+
 const loadHistoryMessages = async (sessionId) => {
   try {
     const response = await axios.get(`/api/history/${sessionId}`)
+    contextUsage.value = null  // 切会话后重置上下文指示
     if (response.status === 200) {
       const data = response.data
       const newMessages = []
@@ -342,7 +458,7 @@ const loadHistoryMessages = async (sessionId) => {
           // 完整对话回合：从 messages 数组中提取 user/assistant 消息
           for (const m of msg.messages || []) {
             if (m.role === 'user') {
-              newMessages.push({ role: 'user', content: m.content || '', _key: nextMsgKey() })
+              newMessages.push({ ...cleanUserMessage(m.content), _key: nextMsgKey() })
             } else if (m.role === 'assistant' && !m.tool_calls) {
               newMessages.push({ role: 'ai', content: m.content || '', _key: nextMsgKey() })
             }
@@ -381,6 +497,96 @@ let sseBuffer = ''
 
 // Agent 状态追踪
 const agentStatus = ref({ visible: false, text: '' })
+const todolistItems = ref([])   // 规划期任务清单（set_todolist / check_todo 事件驱动）
+
+// 澄清选择框（ask_user_for_clarification）
+const clarification = ref(null)      // { question, options }
+const clarifVisible = ref(false)
+const clarifChoice = ref('')
+const clarifCustom = ref('')
+const clarifSubmitting = ref(false)
+const clarifValueReady = computed(() => {
+  const q = clarification.value
+  if (!q) return false
+  const opts = q.options || []
+  if (opts.length) {
+    if (clarifChoice.value === '__custom__') return clarifCustom.value.trim().length > 0
+    return clarifChoice.value.length > 0
+  }
+  return clarifCustom.value.trim().length > 0
+})
+async function submitClarification() {
+  const q = clarification.value
+  if (!q || clarifSubmitting.value) return
+  let answer = ''
+  if ((q.options || []).length) {
+    answer = clarifChoice.value === '__custom__' ? clarifCustom.value.trim() : clarifChoice.value
+  } else {
+    answer = clarifCustom.value.trim()
+  }
+  if (!answer) { message.warning('请选择或输入你的回答'); return }
+
+  // 立刻关闭弹窗并上屏用户回答，避免长续跑期间页面像卡死
+  clarifVisible.value = false
+  clarification.value = null
+  messages.value.push({ role: 'user', content: answer, _key: nextMsgKey() })
+  const aiKey = nextMsgKey()
+  messages.value.push({ role: 'ai', content: '', reasoning: '', _v: 0, _key: aiKey })
+  const aiIdx = messages.value.length - 1
+  clarifSubmitting.value = true
+  agentStatus.value = { visible: true, text: '正在继续生成…' }
+  isLoading.value = true
+  throttleScroll()
+
+  try {
+    const resp = await axios.post('/api/query/resume', {
+      session_id: currentSessionId.value,
+      answer,
+    })
+    const finalAnswer = (resp.data && resp.data.answer) || '(未获得继续结果)'
+    messages.value[aiIdx] = { role: 'ai', content: finalAnswer, reasoning: '', _v: 1, _key: aiKey }
+    throttleScroll()
+  } catch (e) {
+    const errMsg = (e && e.response && e.response.data && e.response.data.detail) || (e && e.message) || '未知错误'
+    messages.value[aiIdx] = {
+      role: 'ai',
+      content: `*[继续生成失败：${errMsg}]*`,
+      reasoning: '',
+      _v: 1,
+      _key: aiKey,
+    }
+  } finally {
+    clarifSubmitting.value = false
+    isLoading.value = false
+    agentStatus.value = { visible: false, text: '' }
+    nextTick(() => messageListRef.value?.scrollToBottom())
+  }
+}
+
+// 上下文使用情况（来自后端 context 事件）
+const contextUsage = ref(null)
+const fmtChars = (n) => (Number(n) || 0).toLocaleString('en-US')
+
+// ── 图搜文（已并入 search_knowledge_base 通道，粘贴图片随发送上传） ──
+
+async function uploadPastedImages(images) {
+  const keys = []
+  for (const img of images || []) {
+    try {
+      const form = new FormData()
+      form.append('file', img.file, (img.file.name || 'pasted.png'))
+      const resp = await axios.post(`/api/query/upload_image?session_id=${encodeURIComponent(currentSessionId.value || '')}`, form)
+      if (resp.data?.key) keys.push(resp.data.key)
+    } catch (err) {
+      message.error(`图片上传失败：${err.message}`)
+    }
+  }
+  return keys
+}
+
+// 回答风格
+const styleOptions = ref([])
+const styleLoading = ref(true)
 
 // 工作流
 const workflowList = ref([])
@@ -392,10 +598,6 @@ const workflowOptions = computed(() => {
   }
   return opts
 })
-
-// 回答风格
-const styleOptions = ref([])
-const styleLoading = ref(true)
 
 const statusLabels = {
   thinking: '深度思考中…',
@@ -436,10 +638,26 @@ const statusLabels = {
   },
 }
 
-const sendQuestion = async (text) => {
+const sendQuestion = async (payload) => {
+  const text = (payload && payload.text || '').trim()
+  const images = payload && payload.images || []
+  // 必须有消息正文（纯图片不支持，需附上文字说明）
   if (!text || isLoading.value) return
 
-  messages.value.push({ role: 'user', content: text, _key: nextMsgKey() })
+  // 新一轮开始：清掉上一轮遗留的任务清单悬浮面板
+  todolistItems.value = []
+
+  // 确保会话已创建（上传图片需要挂在当前会话目录 sessions/{user_id}/{session_id}/ 下）
+  if (!currentSessionId.value) await createNewSession()
+
+  // 附带剪贴板图片：先上传换取对象键，随问答带给模型做图文检索
+  const imageKeys = images.length ? await uploadPastedImages(images) : []
+  messages.value.push({
+    role: 'user',
+    content: text,
+    _key: nextMsgKey(),
+    _attachments: imageKeys.length ? imageKeys : undefined,
+  })
   isLoading.value = true
   throttleScroll()
 
@@ -451,11 +669,12 @@ const sendQuestion = async (text) => {
   let aiVersion = 0
   sseBuffer = ''
   lastProcessedLength = 0
+  contextUsage.value = null
 
   try {
     await axios.post(
       '/api/query',
-      { session_id: currentSessionId.value, question: text, stream: true, style: userStore.answerStyle, workflow: selectedWorkflow.value === '__auto__' ? null : selectedWorkflow.value },
+      { session_id: currentSessionId.value, question: text, stream: true, style: userStore.answerStyle, workflow: selectedWorkflow.value === '__auto__' ? null : selectedWorkflow.value, images: imageKeys.length ? imageKeys : undefined },
       {
         headers: { 'Content-Type': 'application/json' },
         responseType: 'text',
@@ -505,6 +724,18 @@ const sendQuestion = async (text) => {
                     } else {
                       agentStatus.value = { visible: false, text: '' }
                     }
+                  } else if (content.status === 'ask_user') {
+                    // 澄清选择框：展示模型问题与选项，用户提交后走 resume 继续
+                    clarification.value = {
+                      question: content.question || '',
+                      options: Array.isArray(content.options) ? content.options : [],
+                    }
+                    clarifChoice.value = ''
+                    clarifCustom.value = ''
+                    clarifVisible.value = true
+                  } else if (content.status === 'todolist') {
+                    // 任务清单：实时覆盖（助手每完成一项会广播最新清单）
+                    todolistItems.value = Array.isArray(content.items) ? content.items : []
                   } else if (content.status === 'cancelled') {
                     // 中断事件：在消息列表中插入中断提示
                     const cancelMsg = {
@@ -536,6 +767,17 @@ const sendQuestion = async (text) => {
                     _v: aiVersion,
                   }
                   throttleScroll()
+                  continue
+                }
+                if (content.type === 'context') {
+                  // 上下文使用情况（当前上下文 / 最大窗口），仅前端展示
+                  const used = Number(content.used_chars) || 0
+                  const window = Number(content.window_chars) || 0
+                  contextUsage.value = {
+                    used,
+                    window,
+                    pct: window ? Math.round((used / window) * 100) : 0,
+                  }
                   continue
                 }
               }
@@ -575,6 +817,21 @@ const sendQuestion = async (text) => {
   } finally {
     isLoading.value = false
     sseBuffer = ''
+    // 任务清单完成后：收纳进本轮 AI 消息，悬浮面板随之消失
+    if (todolistItems.value && todolistItems.value.length) {
+      const allDone = todolistItems.value.every(it => it.done)
+      const mark = allDone ? '✅' : '📋'
+      aiContent += `\n\n---\n${mark} 任务清单（${allDone ? '全部完成' : '未全部完成'}）\n` +
+        todolistItems.value.map(it => `- ${it.done ? '[x]' : '[ ]'} ${it.text}`).join('\n')
+      aiVersion++
+      messages.value[aiIndex] = {
+        role: 'ai',
+        content: aiContent,
+        reasoning: aiReasoning,
+        _v: aiVersion,
+      }
+      todolistItems.value = []
+    }
     nextTick(() => messageListRef.value?.scrollToBottom())
   }
 }
@@ -589,6 +846,53 @@ const stopGeneration = async () => {
 
 // --- 文件上传 ---
 const uploadStatus = ref({ visible: false, text: '', file: '' })
+
+// 整页拖拽上传：图片→粘贴链路（图文检索），其余→MinerU（会话附件）
+const chatInputRef = ref(null)
+
+const entryToFile = (entry) =>
+  new Promise((res) => { entry.file(res, () => res(null)) })
+
+async function walkEntry(entry, out) {
+  if (entry.isFile) {
+    const f = await entryToFile(entry)
+    if (f) out.push(f)
+    return
+  }
+  if (entry.isDirectory) {
+    const reader = entry.createReader()
+    let all = []
+    while (true) {
+      const batch = await new Promise((res) => reader.readEntries(res, () => res([])))
+      if (!batch.length) break
+      all = all.concat(batch)
+    }
+    for (const child of all) await walkEntry(child, out)
+  }
+}
+
+async function collectDroppedFiles(dataTransfer) {
+  const out = []
+  const items = Array.from(dataTransfer.items || [])
+  for (const it of items) {
+    const entry = typeof it.webkitGetAsEntry === 'function' && it.webkitGetAsEntry()
+    if (entry) {
+      await walkEntry(entry, out)
+    } else if (typeof it.getAsFile === 'function') {
+      const f = it.getAsFile()
+      if (f) out.push(f)
+    }
+  }
+  return out
+}
+
+async function handlePageDrop(e) {
+  if (!e.dataTransfer) return
+  const files = await collectDroppedFiles(e.dataTransfer)
+  if (!files.length) return
+  // 交给 ChatInput 统一路由：图片→预览（发送时图文检索），其余→MinerU 上传
+  chatInputRef.value?.addFiles(files)
+}
 
 const truncateFilename = (name) => {
   if (!name || name.length <= 40) return name
@@ -609,76 +913,36 @@ const handleFileUpload = async (file) => {
     return
   }
 
+  const sessionId = currentSessionId.value
+  if (!sessionId) {
+    message.error('会话 ID 缺失，请重新登录')
+    return
+  }
+
   isUploading.value = true
-  uploadStatus.value = { visible: true, text: '准备上传…' }
+  uploadStatus.value = { visible: true, text: '上传中…', file: file.name }
   loadingBar.start()
 
   try {
     const formData = new FormData()
     formData.append('files', file)
-    const sessionId = currentSessionId.value
-    if (!sessionId) {
-      message.error('会话 ID 缺失，请重新登录')
-      return
-    }
 
-    // SSE 流式上传: 实时接收处理进度
-    let sseBuf = ''
-    let uploadDone = false
-    let fileResult = null
-
-    await axios.post('/api/upload_embeddings?stream=true', formData, {
+    // 会话附件暂存：只落盘到当前会话目录，不解析/不入向量库
+    const res = await axios.post('/api/session_files/upload', formData, {
       headers: { 'X-Session-ID': sessionId },
-      responseType: 'text',
-      onDownloadProgress: (progressEvent) => {
-        const fullText = progressEvent.event.target.responseText || ''
-        const newText = fullText.slice(sseBuf.length)
-        if (!newText) return
-        sseBuf = fullText
-
-        const events = fullText.split('\n\n')
-        for (const raw of events) {
-          const match = raw.match(/^data:\s*(.+)$/m)
-          if (!match) continue
-          try {
-            const data = JSON.parse(match[1])
-            if (data.status === 'done') {
-              uploadDone = true
-              fileResult = data.files
-              uploadStatus.value = { visible: true, text: data.text || '上传完成' }
-              continue
-            }
-            if (data.text) {
-              uploadStatus.value = {
-                visible: true,
-                text: data.text,
-                file: data.file || uploadStatus.value.file || '',
-              }
-            }
-          } catch { /* skip parse errors */ }
-        }
-      },
     })
-
-    // 等待 done 事件或直接完成
-    if (fileResult && fileResult.length > 0) {
-      message.success(`${file.name} 上传成功`)
-      await fetchDocuments()
-      loadingBar.finish()
-    } else if (uploadDone) {
-      message.warning('文件处理失败，请检查 MinerU 服务是否正常')
-      loadingBar.error()
-    } else {
-      loadingBar.error()
-      message.error('上传失败')
-    }
+    if (res.data?.usage) documentUsage.value = res.data.usage
+    await fetchDocuments()
+    await fetchParseStatus()
+    message.success(`${file.name} 已暂存到当前会话，正在解析…`)
+    loadingBar.finish()
   } catch (error) {
     loadingBar.error()
     const detail = error.response?.data?.detail || '上传失败'
     message.error(detail)
   } finally {
     isUploading.value = false
-    uploadStatus.value = { visible: false, text: '' }
+    uploadStatus.value = { visible: false, text: '', file: '' }
   }
 }
 
@@ -697,6 +961,16 @@ const handleLogout = () => {
     },
   })
 }
+
+// 会话切换时刷新该会话的暂存附件与解析状态
+watch(currentSessionId, () => {
+  parseStatus.value = {}
+  todolistItems.value = []
+  clarification.value = null
+  clarifVisible.value = false
+  fetchDocuments()
+  fetchParseStatus()
+})
 
 onMounted(() => {
   fetchUserSessions()
@@ -722,6 +996,7 @@ onMounted(() => {
 onUnmounted(() => {
   if (scrollTimer) cancelAnimationFrame(scrollTimer)
   scrollTimer = null
+  stopParsePolling()
 })
 </script>
 
@@ -798,5 +1073,57 @@ onUnmounted(() => {
 @keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
+}
+
+/* 上下文使用情况指示器（最小化） */
+.context-usage {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--color-text-3);
+  white-space: nowrap;
+  cursor: default;
+}
+
+/* 规划期任务清单 */
+.todo-panel {
+  margin: 10px 24px 0;
+  padding: 10px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: rgba(24, 160, 88, 0.04);
+}
+.todo-header {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 6px;
+  color: var(--color-text-1);
+}
+.todo-list { display: flex; flex-direction: column; gap: 6px; }
+.todo-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--color-text-1);
+}
+.todo-item.done .todo-text {
+  color: var(--color-text-3);
+  text-decoration: line-through;
+}
+.todo-box { flex-shrink: 0; }
+.todo-text { flex: 1; }
+.todo-done-tag {
+  font-size: 11px;
+  color: #18a058;
+  flex-shrink: 0;
+}
+
+/* 澄清选择框 */
+.clarif-question {
+  font-size: 14px;
+  color: var(--color-text-1);
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+  line-height: 1.6;
 }
 </style>

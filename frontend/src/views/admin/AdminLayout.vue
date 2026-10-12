@@ -71,6 +71,18 @@
           </n-breadcrumb>
         </div>
         <div class="header-right">
+          <!-- 返回对话页（管理员也是用户，对话页为主页面） -->
+          <n-button
+            quaternary
+            size="small"
+            @click="router.push('/chat')"
+            style="margin-right: 4px"
+          >
+            <template #icon>
+              <n-icon :component="ChatbubblesOutline" />
+            </template>
+            返回对话
+          </n-button>
           <!-- 主题切换 -->
           <n-button
             quaternary
@@ -112,6 +124,11 @@ import {
   CloseOutline,
   SunnyOutline,
   MoonOutline,
+  ChatbubblesOutline,
+  ServerOutline,
+  DocumentsOutline,
+  ConstructOutline,
+  DocumentTextOutline,
 } from '@vicons/ionicons5'
 import logoSvg from '@/assets/logo.svg'
 import app from '@/config/app'
@@ -126,8 +143,12 @@ const drawerOpen = ref(false)
 
 const menuItems = [
   { path: '/admin/dashboard', label: '仪表盘', icon: SpeedometerOutline },
+  { path: '/admin/members', label: '用户与会话', icon: PeopleOutline },
+  { path: '/admin/database', label: '数据管理', icon: ServerOutline },
+  { path: '/admin/logs', label: '日志管理', icon: DocumentsOutline },
+  { path: '/admin/tools', label: '工具管理', icon: ConstructOutline },
+  { path: '/admin/prompts', label: 'Prompt 管理', icon: DocumentTextOutline },
   { path: '/admin/settings', label: '系统设置', icon: SettingsOutline },
-  { path: '/admin/users', label: '用户管理', icon: PeopleOutline },
 ]
 
 const currentTitle = computed(() => {

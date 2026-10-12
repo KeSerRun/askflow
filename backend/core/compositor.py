@@ -2,7 +2,7 @@
 
 全项目唯一允许"认识所有模块"的地方：
   1. 从环境变量构建不可变 AppConfig
-  2. 按 .env 开关选择具体 adapter 实现（storage/vector/object/queue/cache ...）
+  2. 按 .env 开关选择具体 adapter 实现（storage/vector/object/cache ...）
   3. 组装各应用服务与服务注册表
 
 业务层、适配器之间互相不认识，组合仅发生在此处。
@@ -10,25 +10,31 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 from dataclasses import dataclass, field
 
 from agent import IntegratedSystem
+from agent.tools import registry as tool_registry
 from config import AppConfig, load_app_config
+from config.paths import _project_root
 from infra.adapters.cache import InMemoryCache, RedisCache
 from infra.adapters.llm import OpenAIChatModel, OpenAIEmbedder
-from infra.adapters.object import LocalObjectStore, MinioObjectStore
-from infra.adapters.queue import InProcessTaskQueue, RabbitMQTaskQueue
+from infra.adapters.object import MinioObjectStore
 from infra.adapters.storage import CachedRepo, MySQLRepo, SqliteRepo
-from infra.adapters.vector import CachedVectorStore, FaissVectorStore, MilvusVectorStore
-from infra.llm_client import OpenAIClient
+from infra.adapters.vector import CachedVectorStore, MilvusVectorStore
 from modules.auth import AuthService
 from modules.dashboard.service import DashboardService
+from modules.database import entity as _db_entity  # noqa: F401 注册 ORM 模型（chunk_parents 等）
+from modules.database.service import DatabaseService
+from modules.logger.db_handler import attach_application_db_logger
+from modules.logger.service import LogService, RequestLogService
 from modules.document.service import DocumentService
-from modules.document.storage_service import StorageService
 from modules.history import HistoryService
+from modules.health.service import HealthService
 from modules.query import QueryService
 from modules.session import SessionService
+from modules.tools import ToolService
 from modules.user import UserService
 
 
@@ -48,37 +54,11 @@ class Container:
     history_service: object
     object_store: object
     cache: object = field(default_factory=InMemoryCache)
-    task_queue: object = field(default_factory=InProcessTaskQueue)
     services: dict = field(default_factory=dict)
 
     def get(self, name: str):
         """按名取服务（无则 KeyError）。"""
         return self.services[name]
-
-
-def _build_llm_client(cfg: AppConfig) -> OpenAIClient:
-    """构造 LLM 对话客户端。
-
-    opencode Go 端点（``https://opencode.ai/zen/go/v1``）要求 ``x-opencode-session``
-    头用于路由；此处按进程生成一个会话标识随所有聊天请求发送（其它端点会忽略该头）。
-    """
-    return OpenAIClient(
-        api_key=cfg.llm_api_key,
-        base_url=cfg.llm_base_url,
-        timeout=cfg.llm_timeout,
-        max_retries=cfg.llm_max_retries,
-        default_headers={"x-opencode-session": uuid.uuid4().hex},
-    )
-
-
-def _build_embed_client(cfg: AppConfig) -> OpenAIClient:
-    """构造嵌入客户端（独立端点/密钥）。"""
-    return OpenAIClient(
-        api_key=cfg.embed_api_key,
-        base_url=cfg.embed_base_url,
-        timeout=cfg.llm_timeout,
-        max_retries=cfg.llm_max_retries,
-    )
 
 
 def build_container(cfg: AppConfig) -> Container:
@@ -92,9 +72,23 @@ def build_container(cfg: AppConfig) -> Container:
     """
 
     # ── LLM 对话 / 嵌入 ──
-    chat_model = OpenAIChatModel(_build_llm_client(cfg), cfg.llm_model)
+    # 对话/嵌入各自独立的 OpenAI 兼容端点与密钥，直接构造适配器。
+    # opencode Go 端点要求 x-opencode-session 头用于路由（其它端点忽略）。
+    chat_model = OpenAIChatModel(
+        api_key=cfg.llm_api_key,
+        base_url=cfg.llm_base_url,
+        model=cfg.llm_model,
+        timeout=cfg.llm_timeout,
+        max_retries=cfg.llm_max_retries,
+        default_headers={"x-opencode-session": uuid.uuid4().hex},
+    )
     embedder = OpenAIEmbedder(
-        _build_embed_client(cfg), cfg.embed_model, cfg.embed_dim
+        api_key=cfg.embed_api_key,
+        base_url=cfg.embed_base_url,
+        model=cfg.embed_model,
+        dimension=cfg.embed_dim,
+        timeout=cfg.llm_timeout,
+        max_retries=cfg.llm_max_retries,
     )
 
     # ── 缓存（进程内 / Redis）——数据层缓存（仓储 / 向量库）共用 ──
@@ -106,24 +100,49 @@ def build_container(cfg: AppConfig) -> Container:
     # ── 通用对象仓储（按 storage_backend 选具体后端，读缓存 + 写失效） ──
     BackendRepo = MySQLRepo if cfg.storage_backend == "mysql" else SqliteRepo
     repo = CachedRepo(BackendRepo(cfg.storage_db_url), cache)
-    # ── 向量库（读取带缓存，写入失效） ──
-    if cfg.vector_backend == "milvus":
+
+    # ── 工具定义（数据库为准）：先种子入内建工具，再装载到注册表 ──
+    tool_service = ToolService(repo, data_dir=cfg.storage_data_dir)
+    # 自定义工具源码目录注册为可导入包（custom_tools.*）
+    from pathlib import Path as _Path
+    from agent.tools.registry import register_custom_tools_package
+    register_custom_tools_package(str(_Path(cfg.storage_data_dir) / "custom_tools"))
+    tool_service.seed_builtins()
+    # 移除已下线内建工具（read_document_titles / read_section）存量行
+    from core.migrate import purge_deprecated_tools
+    purge_deprecated_tools(repo)
+    tool_registry.load_defs(tool_service.runtime_defs())
+    # 工具调用计数持久化到 agent_tools.call_count
+    tool_registry.set_call_listener(tool_service.increment_call_count)
+    # 用户身份迁移：sessions/request_logs/refresh_tokens 补 user_id 并回填
+    from core.migrate import ensure_user_identity
+    ensure_user_identity(repo)
+
+    # ── 向量库（仅支持 Milvus；连接失败降级 None，不提供其他后端） ──
+    try:
+        from modules.database.parent_store import ChunkParentStore
+        chunk_parent_store = ChunkParentStore(repo)
+    except Exception as e:  # noqa: BLE001
+        from infra.util.logger import logger
+        logger.warning(f"父块内容存储初始化失败，父块功能禁用: {e}")
+        chunk_parent_store = None
+
+    try:
         vector_store = CachedVectorStore(MilvusVectorStore(
             embedder=embedder,
             uri=cfg.vector_milvus_uri,
             token=cfg.vector_milvus_token,
             collection_name=cfg.vector_milvus_collection,
             default_top_k=cfg.retrieval_top_k,
+            parent_store=(chunk_parent_store.save_parent if chunk_parent_store else None),
         ), cache)
-    else:
-        vector_store = CachedVectorStore(FaissVectorStore(
-            embedder=embedder,
-            index_dir=cfg.storage_vector_dir,
-            default_top_k=cfg.retrieval_top_k,
-        ), cache)
+    except Exception as e:  # noqa: BLE001
+        from infra.util.logger import logger
+        logger.warning(f"Milvus 连接失败，向量库不可用: {e}")
+        vector_store = None
 
-    # ── 对象存储（上传文档 / MinerU 产物） ──
-    if cfg.object_backend == "minio":
+    # ── 对象存储（仅支持 MinIO；连接失败降级 None） ──
+    try:
         object_store = MinioObjectStore(
             endpoint=cfg.object_minio_endpoint,
             access_key=cfg.object_minio_access_key,
@@ -131,48 +150,55 @@ def build_container(cfg: AppConfig) -> Container:
             bucket=cfg.object_minio_bucket,
             secure=cfg.object_minio_secure,
         )
-    else:
-        object_store = LocalObjectStore(cfg.storage_data_dir)
-
-    # ── 任务队列（本地线程池 / RabbitMQ） ──
-    if cfg.mq_backend == "rabbitmq":
-        task_queue = RabbitMQTaskQueue(
-            url=cfg.mq_rabbitmq_url,
-            queue=cfg.mq_parse_queue,
-            status_store=cache,
-            consumers=cfg.mineru_max_concurrency,
-        )
-    else:
-        task_queue = InProcessTaskQueue(max_workers=cfg.mineru_max_concurrency)
+    except Exception as e:  # noqa: BLE001
+        from infra.util.logger import logger
+        logger.warning(f"MinIO 连接失败，对象存储不可用: {e}")
+        object_store = None
 
     # ── 应用服务 ──
     user_service = UserService(repo)
     history_service = HistoryService(repo)
-    storage_service = StorageService(data_dir=cfg.storage_data_dir, max_user_mb=cfg.upload_max_user_mb)
     document_service = DocumentService(
         vector=vector_store,
-        history=history_service,
-        storage=storage_service,
-        data_dir=cfg.storage_data_dir,
+        object_store=object_store,
         mineru_max_concurrency=cfg.mineru_max_concurrency,
+        max_session_mb=cfg.upload_max_session_mb,
     )
     auth_service = AuthService(
         user_service,
         jwt_secret=cfg.auth_jwt_secret,
         refresh_store=repo,  # refresh token 轮换/吊销落库（复用通用仓储）
     )
-    session_service = SessionService(repo, history_service)
-    dashboard_service = DashboardService(user_service, vector_store)
+    session_service = SessionService(
+        repo, history_service,
+        cleanup=lambda user_id, session_id: document_service.clear_session_files(
+            user_id, session_id),
+    )
+    dashboard_service = DashboardService(user_service, vector_store, repo)
+    request_log_service = RequestLogService(repo)
+    database_service = DatabaseService(
+        vector_store, document_service,
+        object_store=object_store,
+        parent_store=(chunk_parent_store if vector_store else None),
+        workers=cfg.mineru_max_concurrency,
+    )
+    # 日志管理（查 app_logs / request_logs 表）+ 应用日志入库（APPLogger 附加 DB handler）
+    log_service = LogService(repo)
+    attach_application_db_logger(repo)
 
     # 组装服务
     services = {
         "document_service": document_service,
         "auth_service": auth_service,
-        "storage_service": storage_service,
         "session_service": session_service,
         "user_service": user_service,
         "history_service": history_service,
         "dashboard_service": dashboard_service,
+        "request_log_service": request_log_service,
+        "database_service": database_service,
+        "log_service": log_service,
+        "tool_service": tool_service,
+        "chunk_parent_store": chunk_parent_store,
     }
 
     # 组装容器
@@ -186,7 +212,6 @@ def build_container(cfg: AppConfig) -> Container:
         history_service=history_service,
         object_store=object_store,
         cache=cache,
-        task_queue=task_queue,
         services=services,
     )
 
@@ -194,6 +219,15 @@ def build_container(cfg: AppConfig) -> Container:
     system = IntegratedSystem(container)
     container.services["system"] = system
     container.services["query_service"] = QueryService(system)
+    # 健康检查用例（只探各服务的 health 接口）
+    container.services["health_service"] = HealthService()
+
+    # ── Prompt 管理（identity / workflow / style；保存后热重载 SystemContext） ──
+    from modules.prompt.service import PromptService
+    container.services["prompt_service"] = PromptService(
+        prompts_dir=os.path.join(_project_root, "prompts"),
+        reloader=lambda: getattr(system.tool_loop.system_context, "reload", lambda: None)(),
+    )
 
     return container
 

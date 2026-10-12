@@ -1,20 +1,26 @@
 # ════════════════════════════════════════════════════════════════
 # AskFlow 基础设施编排
-# 包含: MySQL + Redis + RabbitMQ + MinIO + etcd + Milvus
+# 包含: MinIO + etcd + Milvus + Attu + Embedding(Chinese-CLIP) + MinerU(纯 CPU) + SearXNG
+# 仅生产（--profile prod）追加: MySQL + Redis + Backend 容器
+# 本地（不带 --profile prod）后端用 sqlite + inprocess 缓存，无需 MySQL/Redis。
 #
 # 用法（在 docker/ 目录下）:
-#   cd docker && docker compose up -d
+#   cd docker && docker compose up -d               # 默认只起基础设施（本地开发用）
 #   # 或从项目根: docker compose -f docker/docker-compose.yml up -d
+#   # 生产后端(含 MySQL/Redis): docker compose --profile prod up -d --build
 #
 # 数据卷: 全部以 bind mount 挂载在 docker/data/<服务>/ 下，
 #         数据可见、可直接备份/迁移、便于随项目携带。
 #
 # 端口:
-#   MySQL      3306        (管理: 任意客户端)
-#   Redis      6379        (无管理界面)
-#   RabbitMQ   5672/15672  (管理台: http://localhost:15672)
+#   MySQL      3306        (仅 --profile prod)
+#   Redis      6379        (仅 --profile prod)
 #   MinIO      9000/9001   (控制台: http://localhost:9001)
 #   Milvus     19530/9091
+#   Attu       3000        (Milvus 管理台: http://localhost:3000)
+#   Embedding  7997       (本地 Chinese-CLIP 图文嵌入服务, OpenAI 兼容 + 图片嵌入)
+#   MinerU     8000/7860   (文档解析 API / WebUI，默认启动，纯 CPU)
+#   Backend    11000       (仅 --profile prod)
 # ════════════════════════════════════════════════════════════════
 
 name: askflow
@@ -27,6 +33,7 @@ services:
     image: mysql:8.0
     container_name: askflow-mysql
     restart: unless-stopped
+    profiles: ["prod"]   # 仅生产后端需要：本地（sqlite）不启动 MySQL
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-askflow}
@@ -52,6 +59,7 @@ services:
     image: redis:7-alpine
     container_name: askflow-redis
     restart: unless-stopped
+    profiles: ["prod"]   # 仅生产缓存：本地（inprocess）不启动 Redis
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
@@ -61,27 +69,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
-
-  # ────────────────────────────────────────────────
-  # RabbitMQ —— 异步任务队列（PDF 解析/向量化/评估）
-  # ────────────────────────────────────────────────
-  rabbitmq:
-    image: rabbitmq:3-management-alpine
-    container_name: askflow-rabbitmq
-    restart: unless-stopped
-    environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-askflow}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-askflow_password}
-    ports:
-      - "${RABBITMQ_PORT:-5672}:5672"
-      - "${RABBITMQ_MGMT_PORT:-15672}:15672"
-    volumes:
-      - ./data/rabbitmq:/var/lib/rabbitmq
-    healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
 
   # ────────────────────────────────────────────────
   # MinIO —— 对象存储（上传 PDF + MinerU 解析产物 + Milvus 数据）
@@ -165,6 +152,140 @@ services:
         condition: service_started
 
   # ────────────────────────────────────────────────
+  # Attu —— Milvus 官方管理台（GUI）
+  # 访问: http://localhost:${ATTU_PORT:-3000}
+  # Milvus 未开鉴权（COMMON_SECURITY_AUTHORIZATIONENABLED=false）时，账号密码留空即可。
+  # ────────────────────────────────────────────────
+  attu:
+    image: zilliz/attu:v2.4.8
+    container_name: askflow-attu
+    restart: unless-stopped
+    ports:
+      - "${ATTU_PORT:-3000}:3000"
+    environment:
+      MILVUS_URL: milvus:19530
+    depends_on:
+      milvus:
+        condition: service_started
+
+  # ────────────────────────────────────────────────
+  # Embedding —— 图文嵌入服务（Chinese-CLIP，纯 CPU，OpenAI 兼容 + 图片嵌入）
+  # 后端经 EMBED_BASE_URL -> http://embedding:80/v1/embeddings 访问（文本，容器内 80 端口）；
+  # 图片嵌入走 /v1/image_embeddings（图搜文用）。
+  # 维度 512 与 CLIP 模型一致；模型缓存到 ./data/clip，之后可离线运行。
+  # ────────────────────────────────────────────────
+  embedding:
+    build: ./clip-api
+    image: askflow/clip-api:1.0
+    container_name: askflow-embedding
+    restart: unless-stopped
+    environment:
+      CLIP_MODEL: ${CLIP_MODEL:-OFA-Sys/chinese-clip-vit-base-patch16}
+      HF_HOME: /data
+      # 首启自动下载模型到 /data；缓存齐全后可设 HF_HUB_OFFLINE=1 完全离线启动
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+    ports:
+      - "${EMBED_PORT:-7997}:80"
+    volumes:
+      - ./data/clip:/data
+    # 注意：镜像内无 curl/wget，不设容器内健康检查；
+    # 宿主侧验证: curl.exe http://localhost:7997/health
+
+  # ────────────────────────────────────────────────
+  # MinerU —— 本地文档解析服务（默认启动，纯 CPU，无需 GPU）
+  # 镜像由本目录 docker/mineru/Dockerfile 构建（MinerU 4.x 基础包，CPU 可跑）。
+  # backend 容器（同网络）可通过服务名访问: http://mineru-api:8000
+  # ────────────────────────────────────────────────
+  mineru-api:
+    image: ${MINERU_IMAGE:-askflow/mineru-cpu:4}
+    build:
+      context: ./mineru
+      dockerfile: Dockerfile
+    container_name: askflow-mineru-api
+    restart: unless-stopped
+    ports:
+      - "${MINERU_API_PORT:-8000}:8000"
+    environment:
+      # 模型源: modelscope（国内）/ huggingface（国际）/ local（仅用已下载模型）
+      MINERU_MODEL_SOURCE: ${MINERU_MODEL_SOURCE:-modelscope}
+      MINERU_HOME: /root/.mineru
+    entrypoint: ["mineru-kit"]
+    command:
+      - api-server
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      # CPU 档位: basic（小模型，快）/ standard（加 VLM，质量更高但慢，约需 8GB 内存）
+      - --tier
+      - ${MINERU_TIER:-basic}
+      # 需要鉴权时启用（AskFlow 侧 MINERU_API_KEY 需填同一个 Key）
+      # - --api-key
+      # - ${MINERU_API_KEY:-}
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    ipc: host
+    volumes:
+      # MinerU_HOME：模型缓存 + 文档库，持久化避免每次重启重新下载
+      - ./data/mineru-home:/root/.mineru
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/v1/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 300s   # CPU 首启/首次下载模型较慢，留足冷启动时间
+
+  # MinerU WebUI（Gradio）—— 上传 PDF 验证 / 使用解析效果，默认启动
+  mineru-webui:
+    image: ${MINERU_IMAGE:-askflow/mineru-cpu:4}
+    build:
+      context: ./mineru
+      dockerfile: Dockerfile
+    container_name: askflow-mineru-webui
+    restart: unless-stopped
+    ports:
+      - "${MINERU_WEBUI_PORT:-7860}:7860"
+    environment:
+      MINERU_MODEL_SOURCE: ${MINERU_MODEL_SOURCE:-modelscope}
+      MINERU_HOME: /root/.mineru
+    entrypoint: ["mineru-kit"]
+    command:
+      - webui
+      - --server-name
+      - 0.0.0.0
+      - --server-port
+      - "7860"
+      # 复用 mineru-api，不再单独跑解析服务（避免重复占用内存/重复下载模型）
+      - --api-url
+      - http://mineru-api:8000
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    ipc: host
+    volumes:
+      - ./data/mineru-home:/root/.mineru
+    depends_on:
+      mineru-api:
+        condition: service_healthy
+
+  # ────────────────────────────────────────────────
+  # SearXNG —— 元搜索引擎（web_search 工具的后端，聚合上游引擎无需 API Key）
+  # backend 默认按 SEARCH_SEARXNG_URL 访问；生产容器内经服务名互联。
+  # ────────────────────────────────────────────────
+  searxng:
+    image: searxng/searxng
+    container_name: askflow-searxng
+    restart: unless-stopped
+    ports:
+      - "${SEARXNG_PORT:-8888}:8080"
+    volumes:
+      - ./data/searxng:/etc/searxng
+    environment:
+      SEARXNG_BASE_URL: "http://localhost:${SEARXNG_PORT:-8888}/"
+    # 限流 / JSON 格式等行为在 ./data/searxng/settings.yml 中配置
+
+  # ────────────────────────────────────────────────
   # Backend —— FastAPI 后端（生产容器化）
   # 使用 profiles: 默认不启动（开发时本地跑 python app.py）；
   # 生产用 `docker compose --profile prod up -d` 启用。
@@ -181,9 +302,11 @@ services:
       - path: ../backend/.env
         required: false
     environment:
+      # 生产环境：日志只保留 ERROR 及以上（覆盖 ../backend/.env 的 LOG_*）
+      APP_ENV: production
       # 容器内以服务名互联（覆盖 .env 中的 127.0.0.1）
       STORAGE_BACKEND: mysql
-      STORAGE_DB_URL: mysql+pymysql://rag:${MYSQL_PASSWORD:-askflow_password}@mysql:3306/${MYSQL_DATABASE:-askflow}
+      STORAGE_DB_URL: mysql+pymysql://${MYSQL_USER:-askflow}:${MYSQL_PASSWORD:-askflow_password}@mysql:3306/${MYSQL_DATABASE:-askflow}
       VECTOR_BACKEND: milvus
       VECTOR_MILVUS_URI: http://milvus:19530
       OBJECT_BACKEND: minio
@@ -191,12 +314,25 @@ services:
       OBJECT_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
       OBJECT_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
       OBJECT_MINIO_BUCKET: rag-files
-      MQ_BACKEND: rabbitmq
-      MQ_RABBITMQ_URL: amqp://${RABBITMQ_USER:-askflow}:${RABBITMQ_PASSWORD:-askflow_password}@rabbitmq:5672/
       CACHE_BACKEND: redis
       REDIS_URL: redis://redis:6379/0
+      # 本地嵌入服务（服务名互联；clip-api 容器内监听 80，7997 只是宿主映射）
+      EMBED_BASE_URL: http://embedding:80/v1
+      # 容器内健康检查地址（覆盖 ../backend/.env 里固化的 127.0.0.1）
+      EMBED_HEALTH_URL: http://embedding:80/health
+      MINERU_HEALTH_URL: http://mineru-api:8000/v1/health
+      MILVUS_HEALTH_URL: http://milvus:9091/healthz
+      MINIO_HEALTH_URL: http://minio:9000/minio/health/live
       STORAGE_DATA_DIR: data
       LOG_PATH: data/logs
+      # 前端静态资源：容器内用相对路径（相对于 /workspace/backend），避免宿主绝对路径泄漏
+      WEB_DIST_DIR: ../frontend/dist
+      WEB_ASSETS_DIR: ../frontend/dist/assets
+      WEB_INDEX_FILE: ../frontend/dist/index.html
+      # 使用本地 MinerU（同网络内已启动）：容器内指向服务名（覆盖 ../backend/.env 的 127.0.0.1）
+      MINERU_BASE_URL: http://mineru-api:8000
+      # 联网搜索：容器内经服务名访问本地 SearXNG
+      SEARCH_SEARXNG_URL: http://searxng:8080
     ports:
       - "${BACKEND_PORT:-11000}:11000"
     volumes:
@@ -207,9 +343,9 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      rabbitmq:
-        condition: service_healthy
       minio:
         condition: service_started
       milvus:
+        condition: service_started
+      embedding:
         condition: service_started

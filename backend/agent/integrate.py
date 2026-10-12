@@ -8,7 +8,7 @@ import threading
 
 from config.app_config import AppConfig  # noqa: F401  # 便于按名引用
 from config.paths import _project_root as _BACKEND_ROOT
-from infra.logger import logger
+from infra.util.logger import logger
 
 from .checkpoint import CheckpointStore
 from .context import SystemContext
@@ -37,6 +37,8 @@ class IntegratedSystem:
         self.vector_store = container.vector_store
 
         self.system_context = SystemContext(os.path.join(_BACKEND_ROOT, "prompts"))
+        self.cache = getattr(container, "cache", None)  # 与存储层共用的缓存实例
+        self.object_store = getattr(container, "object_store", None)
 
         # 断点续跑：配置开启且有通用仓储时启用
         self.checkpoint_store = None
@@ -53,6 +55,8 @@ class IntegratedSystem:
             system_context=self.system_context,
             cfg=cfg,
             checkpoint_store=self.checkpoint_store,
+            cache=self.cache,
+            object_store=self.object_store,
         )
 
         self.session_last_style: dict[str, str] = {}
@@ -74,16 +78,19 @@ class IntegratedSystem:
         self,
         session_id: str,
         *,
+        answer: str | None = None,
         extra_iterations: int = 0,
         stream: bool = False,
     ):
         """从最近检查点续跑未完成的生成（无检查点返回 None）。
 
         中断 / 崩溃 / 达限后会保留图快照；调用本方法可从断点继续，
+        ``answer`` 可在续跑前注入一条用户消息（用户对澄清问题的回答），
         ``extra_iterations`` 可在续跑时追加迭代预算。
 
         Args:
             session_id: 会话 ID。
+            answer: 用户对澄清问题的回答（附加为 user 消息）。
             extra_iterations: 续跑时额外追加的迭代次数（默认 0）。
             stream: 是否流式续跑（默认 False）。
 
@@ -93,7 +100,8 @@ class IntegratedSystem:
         if self.checkpoint_store is None:
             return None
         return self.tool_loop.resume_from_checkpoint(
-            session_id, extra_iterations=extra_iterations, stream=stream,
+            session_id, answer=answer,
+            extra_iterations=extra_iterations, stream=stream,
         )
 
 
@@ -217,7 +225,8 @@ class IntegratedSystem:
 
     # ── 问答入口 ──
 
-    def run_agent(self, session_id, question, partition: str = None, style: str | None = None, stream=False, workflow: str | None = None):
+    def run_agent(self, session_id, question, partition: str = None, style: str | None = None,
+                  workflow: str | None = None, stream=False):
         """处理用户查询，返回答案（非流式）或事件生成器（流式）。
 
         调用方（API）已持有会话锁。
@@ -227,14 +236,14 @@ class IntegratedSystem:
             question: 用户问题。
             partition: 知识库分区（用户名）。
             style: 回答风格。
+            workflow: 工作流名称（如 Autoplan/DeepResearch，None 表示自动）。
             stream: 是否流式。
-            workflow: 工作流名称（None 为自动识别）。
 
         Returns:
             非流式模式返回答案字符串；流式模式返回事件生成器。
         """
         if stream:
-            return self._run_agent_stream(session_id, question, partition, style, workflow=workflow)
+            return self._run_agent_stream(session_id, question, partition, style, workflow)
 
         self._check_style_change(session_id, style)
         history = self.get_history(session_id)
@@ -267,7 +276,7 @@ class IntegratedSystem:
             question: 用户问题。
             partition: 知识库分区（用户名）。
             style: 回答风格。
-            workflow: 工作流名称。
+            workflow: 工作流名称（None 表示自动）。
 
         Yields:
             事件字典，与 _run_tool_loop_stream 的 yield 格式相同：

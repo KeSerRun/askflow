@@ -4,6 +4,9 @@
 # 布局与本地一致：
 #   /workspace/backend/         后端代码（WORKDIR，= _project_root）
 #   /workspace/frontend/dist/   前端构建产物（FastAPI 静态托管）
+#
+# ⚠️ 前置要求：先在宿主执行 `cd frontend && npm run build` 生成 frontend/dist，
+#    再构建镜像（下面 COPY 依赖它）。前端更新后需重新 build + 重打镜像。
 # ════════════════════════════════════════════════════════════════
 FROM python:3.11-slim
 

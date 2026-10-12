@@ -15,5 +15,6 @@ class Session(Base):
 
     id = mapped_column(Integer, primary_key=True, autoincrement=True)
     session_id = mapped_column(String(64), unique=True, nullable=False)
-    username = mapped_column(String(64), nullable=False)
+    user_id = mapped_column(Integer, nullable=False, index=True)   # 归属用户（users.id）
+    username = mapped_column(String(64), nullable=False)           # 展示用（冗余快照）
     created_at = mapped_column(String(40), nullable=False)

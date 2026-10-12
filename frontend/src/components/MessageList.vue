@@ -40,7 +40,22 @@
       </div>
 
       <div class="bubble">
-        <div v-if="msg.role === 'user'" class="user-content">{{ msg.content }}</div>
+        <template v-if="msg.role === 'user'">
+          <div class="user-content">{{ msg.content }}</div>
+          <div v-if="msg._attachments && msg._attachments.length" class="user-attach">
+            <div class="attach-list">
+              <n-image
+                v-for="(k, i) in msg._attachments" :key="i"
+                :src="attachImgUrl(k)" :preview-src="attachImgUrl(k)"
+                object-fit="cover" width="64" height="64" class="attach-thumb"
+              />
+            </div>
+            <div class="attach-label">
+              <n-icon :component="ImageOutline" />
+              <span>附带 {{ msg._attachments.length }} 张图片</span>
+            </div>
+          </div>
+        </template>
         <div v-else>
           <!-- 推理过程（可折叠） -->
           <details v-if="msg.reasoning" class="reasoning-block">
@@ -90,8 +105,8 @@
 import { ref, computed, nextTick, watch } from 'vue'
 import { renderMarkdown } from '@/utils/markdown'
 // Using renderMarkdown directly in template (no wrapper needed)
-import { NAvatar, NIcon, NH2, NText } from 'naive-ui'
-import { PersonOutline, SparklesOutline } from '@vicons/ionicons5'
+import { NAvatar, NIcon, NH2, NText, NImage } from 'naive-ui'
+import { PersonOutline, ImageOutline, SparklesOutline } from '@vicons/ionicons5'
 import { useUserStore } from '@/stores/user'
 
 const props = defineProps({
@@ -104,6 +119,10 @@ const props = defineProps({
 const messagesContainer = ref(null)
 
 const userStore = useUserStore()
+
+// 用户附带图片（对象键 sessions/{user_id}/{session_id}/query_img/{file}）→ 直链地址
+const attachImgUrl = (key) =>
+  `/api/documents/query_image?key=${encodeURIComponent(String(key))}&token=${encodeURIComponent(userStore.accessToken)}`
 
 const sessionIdDisplay = computed(() =>
   props.currentSessionId ? `${props.currentSessionId.substring(0, 8)}...` : ''
@@ -228,6 +247,38 @@ defineExpose({ scrollToBottom })
 .user-content {
   white-space: pre-wrap;
   color: var(--color-text-1);
+}
+
+.user-attach {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--color-border);
+}
+
+.attach-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.attach-thumb {
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.attach-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: flex-start;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: rgba(128, 128, 128, 0.12);
+  color: var(--color-text-3);
+  font-size: 12px;
 }
 
 .bubble.thinking {

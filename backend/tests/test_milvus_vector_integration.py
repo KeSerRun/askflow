@@ -66,29 +66,29 @@ class MilvusVectorStoreIntegrationTest(unittest.TestCase):
         except Exception:
             pass
 
-    def _doc(self, content, source, partition=None):
-        return Document(page_content=content, metadata={"source": source, "partition": partition or ""})
+    def _doc(self, content, source):
+        return Document(page_content=content, metadata={"source": source})
 
     def test_add_search(self):
         self.store.add_documents([
-            self._doc("苹果公司营收增长强劲", "苹果财报.pdf", "int_p1"),
-            self._doc("特斯拉电动车业务", "特斯拉财报.pdf", "int_p1"),
-        ], partition="int_p1")
+            self._doc("苹果公司营收增长强劲", "苹果财报.pdf"),
+            self._doc("特斯拉电动车业务", "特斯拉财报.pdf"),
+        ])
         self.assertGreaterEqual(self.store.count(), 2)
 
-        hits = self.store.search("苹果公司营收增长强劲", top_k=5, partition="int_p1")
+        hits = self.store.search("苹果公司营收增长强劲", top_k=5)
         self.assertGreaterEqual(len(hits), 1)
         self.assertEqual(hits[0].page_content, "苹果公司营收增长强劲")
 
-    def test_partition_sources_and_delete(self):
+    def test_sources_and_delete(self):
         self.add_random()
-        srcs = self.store.get_sources_by_partition("int_p2")
+        srcs = self.store.get_sources()
         self.assertIn("c.pdf", srcs)
-        self.store.delete_by_sources(["c.pdf"], partition="int_p2")
-        self.assertNotIn("c.pdf", self.store.get_sources_by_partition("int_p2"))
+        self.store.delete_by_sources(["c.pdf"])
+        self.assertNotIn("c.pdf", self.store.get_sources())
 
     def add_random(self):
-        self.store.add_documents([self._doc("随机内容-" + uuid.uuid4().hex, "c.pdf")], partition="int_p2")
+        self.store.add_documents([self._doc("随机内容-" + uuid.uuid4().hex, "c.pdf")])
 
 
 if __name__ == "__main__":

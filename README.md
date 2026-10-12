@@ -1,7 +1,7 @@
 # AskFlow 
 
 基于 FastAPI + LLM 的 RAG 知识问答系统。**前后端分离**、**端口化/适配器架构**
-（本地实现与 Docker 服务可一行切换），支持多工作流、工具调用、PDF 解析、向量检索与容器化部署。
+（本地实现与 Docker 服务可一行切换），支持工具调用、PDF 解析、向量检索与容器化部署。
 
 [![Python](https://img.shields.io/badge/Python-3.11-blue)]()
 [![FastAPI](https://img.shields.io/badge/FastAPI-latest-009688)]()
@@ -85,15 +85,35 @@ npm run build        # 生产构建 → frontend/dist/
 ### 6. Docker 部署（可选）
 
 ```bash
-# 开发：只起基础设施，后端本地运行（cd backend && python app.py）
+# 开发：启动全部容器（基础设施 + MinerU 文档解析），后端本地运行（cd backend && python app.py）
 cd docker && docker compose up -d
 
-# 生产：基础设施 + 后端容器一键启动
+# 生产：再叠加后端容器
 cd docker && docker compose --profile prod up -d --build
 # 访问 http://localhost:11000
 ```
 
+> MinerU 文档解析（API `:8000` / WebUI `:7860`，纯 CPU）已包含在默认启动范围内，
+> 详见 `docker/MINERU.md`。首次 `up` 会构建 MinerU CPU 镜像并下载模型，耗时较长。
+> 本地图文嵌入服务（Chinese-CLIP，端口 `7997`，OpenAI 兼容 + 图片嵌入）同样默认启动，
+> `backend/.env` 的 `EMBED_*` 已指向本地，配置见 `docker/docker-compose.yml`。
+
 详见 `docker/docker-compose.yml`。
+
+### 7. MinerU 本地化部署（纯 CPU，默认启动）
+
+不依赖 mineru.net 云 API，用 Docker Compose 在本机/内网自托管 MinerU 文档解析服务。
+已并入 `docker/docker-compose.yml`，**`docker compose up -d` 默认即会启动**（无需 profile），
+**纯 CPU、无需 GPU**：
+
+```bash
+cd docker
+docker compose up -d --build                       # 默认含 MinerU：API http://localhost:8000 / WebUI http://localhost:7860
+docker compose --profile prod up -d --build        # 生产后端 + MinerU
+```
+
+> 本地 MinerU 走 `/v1` 协议，后端已内置本地适配器（单文件），`backend/.env` 的
+> `MINERU_*` 已指向本机。详见 `docker/MINERU.md`。
 
 ---
 
@@ -129,7 +149,7 @@ askflow/
 │   └── dist/                     #   构建产物（由 FastAPI 托管）
 │
 ├── docker/
-│   ├── docker-compose.yml        # 基础设施编排（MySQL/Redis/RabbitMQ/MinIO/Milvus/backend）
+│   ├── docker-compose.yml        # 基础设施编排（MySQL/Redis/MinIO/Milvus/Embedding/MinerU/backend）
 │   │                             # 注：建库/建表由镜像环境变量 + SQLAlchemy create_all 完成，无 init.sql
 │   └── data/                     # 各服务数据卷（bind mount，运行时生成）
 ├── assets/                       # 资源文件
@@ -162,10 +182,9 @@ askflow/
 |------|------|
 | **前后端分离** | Vue 3 前端（`frontend/`）+ FastAPI 后端（`backend/`），独立构建与部署 |
 | **界面角色隔离** | 管理员仅进管理后台、普通用户仅进对话界面（路由守卫强制，无互跳入口） |
-| **可替换后端** | 存储/向量/对象/队列/缓存 五个开关，本地实现（JSON/FAISS/磁盘/线程池）与 Docker 服务（MySQL/Milvus/MinIO/RabbitMQ/Redis）一行切换 |
+| **可替换后端** | 存储/向量/对象/缓存 四个开关，本地实现与 Docker 服务（MySQL/Milvus/MinIO/Redis）一行切换 |
 | **容器化部署** | docker-compose 编排基础设施；生产 `--profile prod` 可连后端一起容器化 |
-| **多工作流** | 简报、对比、深度研究、自动规划、美股分析（中文名取自 md 前置元数据） |
-| **工具调用** | 14 个工具，知识库检索(RRF融合) + 联网搜索 + 文档阅读 |
+| **工具调用** | 13 个工具，知识库检索(RRF融合) + 联网搜索 + 文档阅读 |
 | **PDF 解析** | MinerU API (VLM/Lite)，自动提取文本/表格/图片 |
 | **多风格回答** | 巴菲特、马斯克、Jobs 等 6 种回答风格（中文名取自 SKILL.md 前置元数据） |
 | **上下文治理** | 超预算自动压缩工具结果或截断旧历史 |
@@ -191,10 +210,10 @@ LLM_API_KEY=sk-...              # 对话模型 API Key
 LLM_BASE_URL=https://...       # 对话模型地址
 LLM_MODEL=deepseek-v4-...
 
-EMBED_API_KEY=sk-...   # 嵌入模型 API Key
-EMBED_BASE_URL=https://...
-EMBED_MODEL=BAAI/bge-m3
-EMBED_DIM=1024
+EMBED_API_KEY=sk-...   # 嵌入模型 API Key（本地 clip-api 填 sk-local）
+EMBED_BASE_URL=http://127.0.0.1:7997/v1
+EMBED_MODEL=OFA-Sys/chinese-clip-vit-base-patch16
+EMBED_DIM=512
 
 MINERU_API_KEY=eyJ...             # PDF 解析 API Key
 ```

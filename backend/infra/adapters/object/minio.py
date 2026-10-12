@@ -80,9 +80,40 @@ class MinioObjectStore:
         except Exception:
             return False
 
+    def delete_keys(self, keys) -> None:
+        """批量删除对象（MinIO remove_objects，每批 ≤1000）。"""
+        from minio.deleteobjects import DeleteObject
+
+        batch: list = []
+
+        def _flush():
+            if batch:
+                try:
+                    for _err in self._client.remove_objects(self.bucket, iter(batch)):
+                        pass  # 消费错误流以触发删除
+                except Exception:
+                    pass
+                batch.clear()
+
+        try:
+            for k in keys:
+                batch.append(DeleteObject(_norm_key(k)))
+                if len(batch) >= 1000:
+                    _flush()
+            _flush()
+        except Exception:
+            _flush()
+
     def list_keys(self, prefix: str = "") -> Iterator[str]:
         for obj in self._client.list_objects(self.bucket, prefix=prefix, recursive=True):
             yield obj.object_name
+
+    def list_objects(self, prefix: str = "") -> list[tuple[str, int]]:
+        """列出前缀下所有对象，返回 ``[(key, size), ...]``。"""
+        out: list[tuple[str, int]] = []
+        for obj in self._client.list_objects(self.bucket, prefix=prefix, recursive=True):
+            out.append((obj.object_name, int(getattr(obj, "size", None) or 0)))
+        return out
 
     def copy(self, src_key: str, dst_key: str) -> None:
         self._client.copy_object(

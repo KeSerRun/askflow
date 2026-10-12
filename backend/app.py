@@ -17,16 +17,20 @@ from fastapi import FastAPI
 from core.compositor import get_container
 from core.http_errors import register_exception_handlers
 from core.middleware import register_middlewares
-from infra.logger import configure_third_party_logging, logger
+from infra.util.logger import configure_third_party_logging, logger
 from modules.auth import controller as auth
 from modules.config import controller as admin_config
 from modules.dashboard import controller as admin_dashboard
+from modules.database import controller as admin_database
 from modules.document import controller as documents
 from modules.frontend import controller as frontend
 from modules.health import controller as health_check
 from modules.history import controller as history
+from modules.logger import controller as admin_logs
+from modules.prompt import controller as admin_prompts
 from modules.query import controller as query
 from modules.session import controller as sessions
+from modules.tools import controller as admin_tools
 from modules.user import controller as admin_users
 
 # ── 应用初始化 ────────────────────────────────────────────────────
@@ -45,8 +49,6 @@ async def lifespan(_app: FastAPI):
         container.config.auth_superuser_passwords,
     )
     logger.info(f"启动完成：容器就绪，超级用户已同步（新建 {created} 个）")
-    # 启动异步任务消费入口
-    container.task_queue.start_consumers()
     yield
 
 
@@ -55,17 +57,22 @@ app = FastAPI(lifespan=lifespan)
 # 表示层统一异常映射（领域异常 / 请求校验错误 → {"detail": str}）
 register_exception_handlers(app)
 
-# 集中注册 HTTP 中间件（CORS + 请求日志/统计）
-register_middlewares(app)
+# 集中注册 HTTP 中间件（CORS + 调用记录 + 请求日志）
+register_middlewares(app, request_log_service=get_container().get("request_log_service"))
 
 
 # ── 路由注册 ──────────────────────────────────────────────────────
 
 app.include_router(admin_users.router)
+app.include_router(admin_tools.router)
 app.include_router(admin_config.router)
 app.include_router(admin_dashboard.router)
+app.include_router(admin_database.router)
 app.include_router(auth.router)
 app.include_router(sessions.router)
+app.include_router(sessions.admin_router)
+app.include_router(admin_logs.router)
+app.include_router(admin_prompts.router)
 app.include_router(history.router)
 app.include_router(query.router)
 app.include_router(documents.router)
@@ -79,7 +86,27 @@ frontend.mount_static(app)
 
 # ── 主入口 ────────────────────────────────────────────────────────
 
+# 并发调优：放宽 FastAPI 同步接口的线程池上限（anyio 默认 40 太紧）。
+# APP_THREAD_POOL=并发线程数（默认 200，最小 40）；
+# APP_WORKERS=进程数（默认 1；>1 时用模块串启动。注意：进程各自持有内存态
+#             （工具注册/目标/任务清单/checkpoint），多进程可能影响跨请求一致性）。
+import os as _os
+
+from config import conf
+
+try:
+    import anyio  # fastapi 依赖，必在
+    _limiter = anyio.to_thread.current_default_thread_limiter()
+    _limiter.total_tokens(max(int(conf.app_thread_pool or 200), 40))
+except Exception:  # noqa: BLE001
+    pass
+
 if __name__ == "__main__":
     logger.info("主页地址: http://127.0.0.1:11000 (Press CTRL+RIGHT-CLICK to enter)")
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=11000)
+
+    _workers = int(conf.app_workers or 1)
+    if _workers > 1:
+        uvicorn.run("app:app", host="0.0.0.0", port=11000, workers=_workers)
+    else:
+        uvicorn.run(app, host="0.0.0.0", port=11000)

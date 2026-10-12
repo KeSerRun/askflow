@@ -1,7 +1,7 @@
 """上下文压缩：归档原历史，压缩工具调用结果后写回。"""
 from __future__ import annotations
 
-from infra.logger import logger
+from infra.util.logger import logger
 
 
 def _archive(data_store: object, session_id: str, history: list, label: str):

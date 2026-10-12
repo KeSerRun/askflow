@@ -24,7 +24,6 @@ GROUP_LABELS = {
     "OBJECT": "对象存储",
     "REDIS": "Redis",
     "CACHE": "缓存",
-    "MQ": "消息队列",
     "AGENT": "Agent",
     "CONTEXT": "上下文治理",
     "SEARCH": "联网搜索",

@@ -2,7 +2,7 @@
 
 import unittest
 
-from core.errors import InvalidCredentials, InvalidRefreshToken, UsernameAlreadyExists
+from core.app_errors import InvalidCredentials, InvalidRefreshToken, UsernameAlreadyExists
 from modules.auth import AuthService
 
 
@@ -29,15 +29,17 @@ class AuthServiceTest(unittest.TestCase):
     def setUp(self):
         self.service = AuthService(_FakeUsers(), jwt_secret="unit-test-secret")
 
-    def test_register_normalizes_username(self):
+    def test_register_preserves_case(self):
         self.service.register("  Alice ", "pw")
-        user = self.service.login("ALICE", "pw")
-        self.assertEqual(user.username, "alice")
+        with self.assertRaises(InvalidCredentials):
+            self.service.login("ALICE", "pw")          # 大小写敏感
+        user = self.service.login("Alice", "pw")       # 精确匹配
+        self.assertEqual(user.username, "Alice")
 
     def test_register_duplicate_raises(self):
         self.service.register("alice", "pw")
         with self.assertRaises(UsernameAlreadyExists):
-            self.service.register("ALICE", "pw")
+            self.service.register("alice", "pw2")
 
     def test_login_invalid_credentials_raises(self):
         self.service.register("alice", "pw")

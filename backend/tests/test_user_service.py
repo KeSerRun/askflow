@@ -17,9 +17,10 @@ class UserServiceTest(unittest.TestCase):
         self.assertEqual(info["username"], "alice")
         self.assertIsNone(self.svc.check_user_credentials("alice", "wrong"))
 
-    def test_username_normalized_lowercase(self):
+    def test_username_preserves_case(self):
         self.svc.insert_user("Alice", "pw")
-        self.assertIsNotNone(self.svc.check_user_credentials("ALICE", "pw"))
+        self.assertIsNone(self.svc.check_user_credentials("ALICE", "pw"))   # 大小写敏感
+        self.assertIsNotNone(self.svc.check_user_credentials("Alice", "pw"))
 
     def test_role_and_password_update(self):
         self.svc.insert_user("alice", "pw")

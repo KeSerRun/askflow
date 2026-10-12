@@ -14,11 +14,11 @@ from __future__ import annotations
 from contextlib import contextmanager, nullcontext
 from functools import wraps
 
-from sqlalchemy import delete as sa_delete, func, select, update as sa_update
+from sqlalchemy import delete as sa_delete, func, or_, select, update as sa_update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 
-from infra.logger import logger
+from infra.util.logger import logger
 
 from .orm import Base, model_for
 
@@ -141,7 +141,10 @@ class SqlAlchemyRepo:
     def find(self, collection: str, where: dict | None = None, *,
              order_by: str | None = None, offset: int = 0, limit: int | None = None,
              session=None) -> list:
-        """按条件查询，返回 ORM 实例列表。"""
+        """按条件查询，返回 ORM 实例列表。
+
+        ``order_by`` 支持 ``"-id"`` 形式（前缀 ``-`` 表示降序）。
+        """
         model = model_for(collection)
         with self._session_scope(session) as s:
             stmt = select(model)
@@ -149,7 +152,9 @@ class SqlAlchemyRepo:
             if criteria:
                 stmt = stmt.where(*criteria)
             if order_by:
-                stmt = stmt.order_by(getattr(model, order_by))
+                desc = order_by.startswith("-")
+                col = getattr(model, order_by.lstrip("-"))
+                stmt = stmt.order_by(col.desc() if desc else col.asc())
             stmt = stmt.offset(offset or None).limit(limit)
             return list(s.execute(stmt).scalars().all())
 
@@ -211,7 +216,42 @@ class SqlAlchemyRepo:
 
     # ── 内部 ──
 
+    @classmethod
+    def _criteria(cls, model, where: dict | None) -> list:
+        """把 ``where`` 字典转成 SQLAlchemy 条件列表（各项之间为 AND）。
+
+        支持键修饰符（见 :meth:`_condition`），以及特殊键 ``__or__``：
+        其值为「条件字典列表」，组内各条件先 OR、再与整体 AND。
+        """
+        where = where or {}
+        criteria = []
+        for key, value in where.items():
+            if key == "__or__":
+                or_criteria = []
+                for group in value or []:
+                    or_criteria.extend(cls._criteria(model, group))
+                if or_criteria:
+                    criteria.append(or_(*or_criteria))
+                continue
+            criteria.append(cls._condition(model, key, value))
+        return criteria
+
     @staticmethod
-    def _criteria(model, where: dict | None) -> list:
-        """把 ``{字段: 值}`` 字典转成 SQLAlchemy 等值条件列表。"""
-        return [getattr(model, k) == v for k, v in (where or {}).items()]
+    def _condition(model, key: str, value):
+        """单个字段条件。
+
+        支持：``field``（等值）/ ``field__ne`` / ``field__ieq``（大小写不敏感等值）/
+        ``field__contains``（LIKE）/ ``field__icontains``（ILIKE）/ ``field__in``。
+        """
+        if key.endswith("__ieq"):
+            # 大小写不敏感等值：LOWER(col) = LOWER(:value)
+            return func.lower(getattr(model, key[:-5])) == str(value).lower()
+        if key.endswith("__ne"):
+            return getattr(model, key[:-4]) != value
+        if key.endswith("__icontains"):
+            return getattr(model, key[:-11]).ilike(f"%{value}%")
+        if key.endswith("__contains"):
+            return getattr(model, key[:-10]).like(f"%{value}%")
+        if key.endswith("__in"):
+            return getattr(model, key[:-4]).in_(list(value))
+        return getattr(model, key) == value

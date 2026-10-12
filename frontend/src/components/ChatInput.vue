@@ -1,12 +1,20 @@
 <template>
   <div class="input-area">
+    <!-- 粘贴图片预览 -->
+    <div v-if="pastedImages.length" class="paste-preview">
+      <div v-for="(img, i) in pastedImages" :key="i" class="paste-chip">
+        <img :src="img.url" alt="pasted" />
+        <button type="button" class="paste-remove" @click="removePasted(i)">×</button>
+      </div>
+    </div>
+
     <div class="input-row">
       <div class="left-actions">
         <!-- 单文件上传 -->
         <n-upload
           :show-file-list="false"
           :custom-request="handleUpload"
-          accept=".pdf"
+          accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.gif,.doc,.docx,.ppt,.pptx,.xls,.xlsx"
           :disabled="isUploading"
           multiple
         >
@@ -29,7 +37,7 @@
         <n-upload
           :show-file-list="false"
           :custom-request="handleUpload"
-          accept=".pdf"
+          accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.gif,.doc,.docx,.ppt,.pptx,.xls,.xlsx"
           :disabled="isUploading"
           multiple
           directory
@@ -51,7 +59,7 @@
         </n-upload>
       </div>
 
-      <div class="center-input">
+      <div class="center-input" @paste="handlePaste">
         <n-input
           v-model:value="inputValue"
           type="textarea"
@@ -94,7 +102,7 @@
 
     <div class="hint">
       <n-text depth="3" style="font-size: 11px">
-        按 Enter 发送，Shift + Enter 换行
+        按 Enter 发送，Shift + Enter 换行；Ctrl + V 可粘贴图片参与图文检索
       </n-text>
     </div>
   </div>
@@ -120,13 +128,57 @@ const props = defineProps({
 const emit = defineEmits(['send', 'stop', 'upload'])
 
 const inputValue = ref('')
+const pastedImages = ref([])
+
+const IS_IMAGE = (f) => f?.type?.startsWith('image/')
+
+const enqueueFile = (file) => {
+  if (!file) return
+  const reader = new FileReader()
+  reader.onload = () => {
+    pastedImages.value.push({ url: reader.result, file })
+  }
+  reader.readAsDataURL(file)
+}
+
+// 图片走“粘贴链路”（随发送上传为图文检索对象键）；其它格式走 MinerU 会话附件
+const routeFile = (file, mineruCb) => {
+  if (IS_IMAGE(file)) enqueueFile(file)
+  else mineruCb(file)
+}
+
+// 供父组件（整页拖拽）把一批文件统一路由
+function addFiles(fileList = []) {
+  for (const f of fileList) routeFile(f, (ff) => emit('upload', ff))
+}
+
+defineExpose({ addFiles })
 
 const handleSend = () => {
   const text = inputValue.value.trim()
   if (!text || props.isLoading || props.isUploading) return
-  emit('send', text)
+  emit('send', { text, images: pastedImages.value.slice() })
   inputValue.value = ''
+  pastedImages.value = []
 }
+
+const handlePaste = (e) => {
+  const items = e.clipboardData?.items
+  if (!items) return
+  let added = false
+  for (const it of items) {
+    if (it.kind === 'file' && it.type.startsWith('image/')) {
+      const file = it.getAsFile()
+      if (!file) continue
+      e.preventDefault()
+      added = true
+      enqueueFile(file)
+    }
+  }
+  if (!added) pastedImages.value = []
+}
+
+const removePasted = (i) => { pastedImages.value.splice(i, 1) }
 
 const handleKeydown = (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
@@ -135,9 +187,9 @@ const handleKeydown = (e) => {
   }
 }
 
-// custom-request 让我们直接拿到原生 File 对象,转给父组件统一处理
+// custom-request 让我们直接拿到原生 File 对象：图片→粘贴链路预览，其余→MinerU
 const handleUpload = ({ file, onFinish, onError }) => {
-  emit('upload', file.file)
+  routeFile(file.file, (f) => emit('upload', f))
   onFinish()
 }
 </script>
@@ -182,6 +234,45 @@ const handleUpload = ({ file, onFinish, onError }) => {
 .hint {
   text-align: center;
   margin-top: 8px;
+}
+
+/* 粘贴图片预览 */
+.paste-preview {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  max-width: 880px;
+  margin: 0 auto 8px;
+}
+.paste-chip {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+}
+.paste-chip img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.paste-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  line-height: 16px;
+  text-align: center;
+  border: none;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
 }
 
 @media (max-width: 768px) {

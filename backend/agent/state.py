@@ -28,6 +28,7 @@ class GraphState(TypedDict, total=False):
     empty_retries: int
     length_retries: int
     clarification: str | None
+    clarification_options: list | None
     final_answer: str | None
     finished: bool | None
 

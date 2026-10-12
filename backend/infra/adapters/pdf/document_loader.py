@@ -1,7 +1,7 @@
 """adapters.pdf.document_loader —— 文档加载管线。
 
 从 MinerU 解析输出目录构建 Document 列表，供向量入库使用。
-Document 类型统一来自 base.models。
+Document 类型统一来自 core.models。
 """
 
 from __future__ import annotations
@@ -11,18 +11,23 @@ from datetime import datetime
 from typing import List
 
 from config import conf
-from infra.logger import logger
+from infra.util.logger import logger
 from core.models import Document
 
-from .mineru_impl import MinerUPDFLoader
+from .mineru_impl import MinerULoader
+
+# MinerU 4.x 支持的输入格式（全部走同一解析器）：
+#   PDF / 常见图片格式 / Office 文档（doc/docx、ppt/pptx、xls/xlsx）
+MINERU_EXTENSIONS = [
+    "pdf",
+    "png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff", "gif", "ico",
+    "doc", "docx", "ppt", "pptx", "xls", "xlsx",
+]
+
+document_loaders = {ext: MinerULoader for ext in MINERU_EXTENSIONS}
 
 
-document_loaders = {
-    "pdf": MinerUPDFLoader,
-}
-
-
-def load_sigle_document(root, file_name):
+def load_single_document(root, file_name):
     """加载单个文档文件。
 
     根据文件扩展名选择对应的加载器。
@@ -68,7 +73,7 @@ def load_documents_from_dir(directory):
     documents = []
     for root, _, files in os.walk(directory):
         for file in files:
-            doc = load_sigle_document(root, file)
+            doc = load_single_document(root, file)
             if doc:
                 documents.extend(doc)
     return documents
@@ -83,7 +88,7 @@ def load_documents_from_file(file_path):
     Returns:
         Document 列表，失败返回空列表。
     """
-    doc = load_sigle_document(os.path.dirname(file_path), os.path.basename(file_path))
+    doc = load_single_document(os.path.dirname(file_path), os.path.basename(file_path))
     return doc if doc else []
 
 

@@ -1,32 +1,63 @@
-"""adapters.llm.openai —— OpenAI 兼容端点适配器。
+"""adapters.llm.openai —— OpenAI 兼容端点适配器（直连 SDK）。
 
 OpenAIChatModel : 对话（函数调用 + 流式）→ ports.ChatModel
-OpenAIEmbedder  : 文本嵌入 → ports.Embedder
+OpenAIEmbedder  : 文本嵌入（自动分批）  → ports.Embedder
 
-底层复用 base.llm_client.OpenAIClient（支持 OpenAI / SiliconFlow / 任意兼容端点）。
+直接封装 `openai.OpenAI` 客户端（支持 OpenAI / SiliconFlow / 任意兼容端点），
+不再引入独立的传输层；原始 SDK 结果在本类内直接转成领域类型
+（ChatResponse / ChatStreamEvent）。
 """
 
 from __future__ import annotations
 
-from typing import Iterator, Optional
+import os
+from typing import Iterable, Iterator, List, Optional
 
-from infra.llm_client import OpenAIClient
+from openai import OpenAI
 
+from infra.util.logger import logger
 from core.models import ChatResponse, ChatStreamEvent
 
 
 class OpenAIChatModel:
-    """对话模型适配器。"""
+    """OpenAI 兼容对话模型适配器（ports.ChatModel）。"""
 
-    def __init__(self, client: OpenAIClient, model: str):
+    def __init__(
+        self,
+        api_key: Optional[str],
+        base_url: Optional[str],
+        model: str,
+        *,
+        timeout: float = 60.0,
+        max_retries: int = 3,
+        default_headers: Optional[dict] = None,
+    ):
         """初始化。
 
         Args:
-            client: 已配置连接参数的底层客户端。
+            api_key: API 密钥；为 None 时回退环境变量 LLM_API_KEY。
+            base_url: 兼容端点地址；None 用 OpenAI 官方默认。
             model: 模型名（如 deepseek-v4-flash）。
+            timeout: 请求超时秒数。
+            max_retries: SDK 失败自动重试次数。
+            default_headers: 附加到所有请求的默认头（如 opencode Go 的 x-opencode-session）。
+
+        Raises:
+            RuntimeError: 未提供 API 密钥时抛出。
         """
-        self._client = client
+        key = api_key or os.environ.get("LLM_API_KEY")
+        if not key:
+            raise RuntimeError("未设置 LLM_API_KEY，请在 .env 或环境变量中配置")
+
+        self._client = OpenAI(
+            api_key=key,
+            base_url=base_url or None,
+            timeout=timeout,
+            max_retries=max_retries,
+            default_headers=default_headers or None,
+        )
         self._model = model
+        logger.debug(f"Chat OpenAI 客户端初始化完成，base_url={base_url or 'https://api.openai.com/v1'}")
 
     def chat(
         self,
@@ -38,20 +69,34 @@ class OpenAIChatModel:
         max_tokens: int = 8192,
         reasoning_effort: Optional[str] = None,
     ) -> ChatResponse:
-        resp = self._client.chat_with_tools(
-            messages=messages,
+        """非流式对话（支持工具调用）。"""
+        kwargs: dict = dict(
             model=self._model,
-            tools=tools or [],
-            tool_choice=tool_choice,
-            stream=False,
+            messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            reasoning_effort=reasoning_effort,
         )
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = tool_choice
+        if reasoning_effort is not None:
+            kwargs["reasoning_effort"] = reasoning_effort
+
+        resp = self._client.chat.completions.create(**kwargs)
+        msg = resp.choices[0].message
+
+        tool_calls = [
+            {
+                "id": tc.id,
+                "name": tc.function.name,
+                "arguments": tc.function.arguments or "",
+            }
+            for tc in (msg.tool_calls or [])
+        ]
         return ChatResponse(
-            content=resp.get("content") or "",
-            tool_calls=resp.get("tool_calls") or [],
-            finish_reason=resp.get("finish_reason"),
+            content=msg.content or "",
+            tool_calls=tool_calls,
+            finish_reason=resp.choices[0].finish_reason or "stop",
         )
 
     def chat_stream(
@@ -64,39 +109,101 @@ class OpenAIChatModel:
         max_tokens: int = 8192,
         reasoning_effort: Optional[str] = None,
     ) -> Iterator[ChatStreamEvent]:
-        for ev in self._client.chat_with_tools(
-            messages=messages,
+        """流式对话（支持工具调用），产出领域事件 ChatStreamEvent。"""
+        kwargs: dict = dict(
             model=self._model,
-            tools=tools or [],
-            tool_choice=tool_choice,
-            stream=True,
+            messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            reasoning_effort=reasoning_effort,
-        ):
-            etype = ev.get("type", "")
-            if etype == "tool_calls":
-                yield ChatStreamEvent.tool_calls(ev.get("calls") or [])
-            elif etype == "finish":
-                yield ChatStreamEvent.finish(ev.get("reason"))
-            elif etype == "reasoning":
-                yield ChatStreamEvent.reasoning(ev.get("text") or "")
-            else:  # content / default
-                yield ChatStreamEvent.content(ev.get("text") or "")
+            stream=True,
+        )
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = tool_choice
+        if reasoning_effort is not None:
+            kwargs["reasoning_effort"] = reasoning_effort
+
+        resp = self._client.chat.completions.create(**kwargs)
+
+        accumulated: dict = {}
+        finish_reason: Optional[str] = None
+        try:
+            for chunk in resp:
+                if not chunk.choices:
+                    continue
+                choice = chunk.choices[0]
+                delta = choice.delta
+
+                content = getattr(delta, "content", None)
+                if content:
+                    yield ChatStreamEvent.content(content)
+
+                reasoning = getattr(delta, "reasoning_content", None)
+                if reasoning is None:
+                    extra = getattr(delta, "model_extra", None) or {}
+                    reasoning = extra.get("reasoning_content")
+                if reasoning:
+                    yield ChatStreamEvent.reasoning(reasoning)
+
+                for i, tcd in enumerate(getattr(delta, "tool_calls", None) or []):
+                    idx = getattr(tcd, "index", i)
+                    acc = accumulated.setdefault(idx, {"id": "", "name": "", "arguments": ""})
+                    if getattr(tcd, "id", None):
+                        acc["id"] = tcd.id
+                    fn = getattr(tcd, "function", None)
+                    if fn is not None:
+                        if getattr(fn, "name", None):
+                            acc["name"] = fn.name
+                        if getattr(fn, "arguments", None):
+                            acc["arguments"] += fn.arguments
+
+                finish_reason = getattr(choice, "finish_reason", None)
+                if finish_reason == "tool_calls" and accumulated:
+                    yield ChatStreamEvent.tool_calls(list(accumulated.values()))
+                    accumulated.clear()
+        finally:
+            if accumulated:
+                yield ChatStreamEvent.tool_calls(list(accumulated.values()))
+            if finish_reason:
+                yield ChatStreamEvent.finish(finish_reason)
 
 
 class OpenAIEmbedder:
-    """文本嵌入适配器。"""
+    """OpenAI 兼容文本嵌入适配器（ports.Embedder），自动分批。"""
 
-    def __init__(self, client: OpenAIClient, model: str, dimension: int):
+    def __init__(
+        self,
+        api_key: Optional[str],
+        base_url: Optional[str],
+        model: str,
+        dimension: int,
+        *,
+        timeout: float = 60.0,
+        max_retries: int = 3,
+    ):
         """初始化。
 
         Args:
-            client: 已配置连接参数的底层客户端。
-            model: 嵌入模型名（如 BAAI/bge-m3）。
-            dimension: 向量维度（如 1024）。
+            api_key: API 密钥；为 None 时回退 EMBED_API_KEY / LLM_API_KEY。
+            base_url: 兼容端点地址。
+            model: 嵌入模型名（如 OFA-Sys/chinese-clip-vit-base-patch16）。
+            dimension: 向量维度（如 512）。
+            timeout: 请求超时秒数。
+            max_retries: SDK 失败自动重试次数。
+
+        Raises:
+            RuntimeError: 未提供 API 密钥时抛出。
         """
-        self._client = client
+        key = api_key or os.environ.get("EMBED_API_KEY") or os.environ.get("LLM_API_KEY")
+        if not key:
+            raise RuntimeError("未设置 EMBED_API_KEY，请在 .env 或环境变量中配置")
+
+        self._client = OpenAI(
+            api_key=key,
+            base_url=base_url or None,
+            timeout=timeout,
+            max_retries=max_retries,
+        )
         self._model = model
         self._dimension = dimension
 
@@ -104,7 +211,64 @@ class OpenAIEmbedder:
     def dimension(self) -> int:
         return self._dimension
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed(self, texts: Iterable[str], batch_size: int = 32) -> List[List[float]]:
+        """批量文本嵌入，自动分批。
+
+        Args:
+            texts: 待嵌入文本。
+            batch_size: 每批条数（默认 32）。
+
+        Returns:
+            嵌入向量列表。
+        """
+        texts = list(texts)
         if not texts:
             return []
-        return self._client.embed(texts, model=self._model)
+
+        total = len(texts)
+        num_batches = (total + batch_size - 1) // batch_size
+        out: List[List[float]] = []
+
+        for i in range(0, total, batch_size):
+            batch = texts[i: i + batch_size]
+            batch_idx = i // batch_size + 1
+            logger.debug(f"嵌入请求 {batch_idx}/{num_batches} (本批 {len(batch)} 条, 累计 {i}/{total})...")
+            try:
+                resp = self._client.embeddings.create(model=self._model, input=batch)
+                out.extend([d.embedding for d in resp.data])
+                logger.debug(f"嵌入完成 {batch_idx}/{num_batches} (本批 {len(batch)} 条)")
+            except Exception as e:
+                logger.error(f"嵌入失败 {batch_idx}/{num_batches}: {e}")
+                raise
+
+        return out
+
+    def embed_image(self, data: bytes) -> List[float]:
+        """图片嵌入（CLIP 图向量，与文本同一向量空间）。
+
+        Args:
+            data: 图片字节（PNG/JPEG 等）。
+
+        Returns:
+            归一化向量（与文本嵌入同维度）。
+
+        Raises:
+            RuntimeError: 图片嵌入服务不可用或编码失败。
+        """
+        import base64 as _b64
+
+        import httpx
+
+        base = str(getattr(self._client, "base_url", "") or "").rstrip("/")
+        url = f"{base}/image_embeddings"
+        payload = {"images": [_b64.b64encode(data).decode("ascii")]}
+        try:
+            resp = httpx.post(url, json=payload, timeout=60)
+            resp.raise_for_status()
+            items = resp.json().get("data") or []
+            if not items:
+                raise RuntimeError("图片嵌入返回空")
+            return [float(x) for x in items[0]["embedding"]]
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"图片嵌入失败: {e}")
+            raise RuntimeError(f"图片嵌入失败: {e}") from e

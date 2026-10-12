@@ -1,7 +1,5 @@
 <template>
   <div class="users-page">
-    <n-h2>用户管理</n-h2>
-
     <!-- 操作栏 -->
     <n-space style="margin-bottom: 16px" justify="space-between" align="center">
       <n-button type="primary" @click="showAddModal = true">
@@ -96,7 +94,7 @@ import { useUserStore } from '@/stores/user'
 import {
   NButton, NIcon, NSpace, NText, NDataTable,
   NModal, NForm, NFormItem, NInput,
-  NRadio, NRadioGroup, NH2, NTag,
+  NRadio, NRadioGroup, NTag,
 } from 'naive-ui'
 import {
   PersonAddOutline, TrashOutline, ShieldCheckmarkOutline, KeyOutline,
@@ -137,10 +135,17 @@ const addRules = {
 const pagination = reactive({
   page: 1,
   pageSize: 20,
-  showSizePicker: false,
+  showSizePicker: true,
+  pageSizes: [10, 20, 50, 100],
   pageCount: 1,
   prefix({ pageCount }) {
     return `共 ${store.usersData?.total || 0} 条`
+  },
+  onUpdatePageSize(size) {
+    pagination.pageSize = size
+    pagination.page = 1
+    updatePagination()
+    store.fetchUsers(1, size)
   },
 })
 

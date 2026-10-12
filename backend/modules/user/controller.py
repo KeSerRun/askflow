@@ -5,7 +5,7 @@
 from fastapi import APIRouter, Depends, Query
 
 from core.deps import require_admin, user_service
-from infra.logger import logger
+from infra.util.logger import logger
 from .dto import ChangeRoleBody, CreateUserBody, ResetPasswordBody
 from . import vo as views
 
@@ -13,17 +13,17 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
 @router.get("/users")
-async def list_users(
+def list_users(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     user: dict = Depends(require_admin),
 ):
     """列出所有用户（分页，响应中脱敏 password / id）。"""
-    return views.page(user_service.get_all_users(page=page, page_size=page_size), page, page_size)
+    return views.page(user_service.get_all_users(page=page, page_size=page_size))
 
 
 @router.post("/users")
-async def create_user(body: CreateUserBody, user: dict = Depends(require_admin)):
+def create_user(body: CreateUserBody, user: dict = Depends(require_admin)):
     """创建用户（可指定角色）。
 
     Raises:
@@ -35,7 +35,7 @@ async def create_user(body: CreateUserBody, user: dict = Depends(require_admin))
 
 
 @router.delete("/users/{username}")
-async def delete_user(username: str, user: dict = Depends(require_admin)):
+def delete_user(username: str, user: dict = Depends(require_admin)):
     """删除用户（禁止删除自身）。
 
     Raises:
@@ -48,7 +48,7 @@ async def delete_user(username: str, user: dict = Depends(require_admin)):
 
 
 @router.put("/users/{username}/role")
-async def change_user_role(username: str, body: ChangeRoleBody, user: dict = Depends(require_admin)):
+def change_user_role(username: str, body: ChangeRoleBody, user: dict = Depends(require_admin)):
     """变更用户角色。
 
     Raises:
@@ -60,7 +60,7 @@ async def change_user_role(username: str, body: ChangeRoleBody, user: dict = Dep
 
 
 @router.put("/users/{username}/password")
-async def reset_password(username: str, body: ResetPasswordBody, user: dict = Depends(require_admin)):
+def reset_password(username: str, body: ResetPasswordBody, user: dict = Depends(require_admin)):
     """重置用户密码。
 
     Raises:

@@ -31,7 +31,7 @@ description: 新闻简报工作流 —— 快速搜索 → 要点提炼 → 结�
 1. 先搜索最核心的关键词，获取 5 条最新结果
 2. 如果覆盖不全，补搜一个子方向（不要超过 2 次搜索）
 
-> 💡 如果某篇搜索结果标题明显包含关键信息，可使用 `read_url` 快速浏览全文确认细节。
+> 💡 如果用户附了截图/图表，先用 `ocr_image` 读出文字再纳入关键词；某条搜索结果标题明显含关键信息，可用 `read_url` 快速浏览确认。
 
 信息收集完毕后进入下一步。
 
@@ -72,8 +72,9 @@ description: 新闻简报工作流 —— 快速搜索 → 要点提炼 → 结�
 |------|------|
 | `web_search` | 联网搜索最新资讯 |
 | `read_url` | 阅读搜索结果全文 |
-| `search_knowledge_base` | 检索知识库中的相关资料 |
+| `search_knowledge_base` | 检索知识库中的相关资料（`mode`：mixed/text/image） |
 | `search_document_content` | 在知识库文档中搜索关键词 |
+| `ocr_image` | 读取用户截图/图表中的文字 |
 | `read_chunk_context` | 查看检索结果的上下文 |
-| `spawn_subagent` | 并行搜索多个子话题 |
+| `set_todolist` / `check_todo` | （多步简报时）建立并勾选简报步骤 |
 | `my` | 查看当前工具调用统计和配置 |

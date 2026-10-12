@@ -25,8 +25,8 @@ from langchain_core.runnables.config import RunnableConfig
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 
-from core.models import ChatResponse, ChatStreamEvent
-from infra.logger import log_llm_input, logger
+from core.models import ChatResponse
+from infra.util.logger import log_llm_input, logger
 
 from .checkpoint import CheckpointStore
 from .context import SystemContext
@@ -36,9 +36,10 @@ from .state import (
     budget_ok,
     last_assistant_content,
     tool_result_message,
+    total_message_chars,
 )
 from .tools import registry
-from .tools._infra_handlers import _get_goal_line
+from .tools._common import _get_goal_line, _get_todolist, _todo_line
 from .tools.registry import ToolContext
 
 # ── 工具调用展示解析（前端 status 事件） ──
@@ -76,6 +77,8 @@ class ToolLoop:
         vector_store: object = None,
         system_context: SystemContext = None,
         checkpoint_store: CheckpointStore | None = None,
+        cache: object = None,
+        object_store: object = None,
     ):
         """初始化 ToolLoop。
 
@@ -86,14 +89,17 @@ class ToolLoop:
             vector_store: 向量库实例。
             system_context: 系统上下文（身份/风格/工作流）。
             checkpoint_store: 断点快照存储（None 则不启用 checkpoint/续跑）。
+            cache: 与存储层共用的缓存实例（工具结果缓存；None 则不缓存）。
+            object_store: 对象存储适配器（MinIO），供文档类工具读取文件内容。
         """
         self.cfg = cfg
         self.chat_client = chat_client
         self.data_store = data_store
         self.vector_store = vector_store
         self.system_context = system_context
-        self.chat_model = getattr(cfg, "llm_model", None)
         self.checkpoint_store = checkpoint_store
+        self.cache = cache
+        self.object_store = object_store
         self.graph = self._build_graph()
 
     # ── 图构建 ──
@@ -109,7 +115,13 @@ class ToolLoop:
             lambda s: s.get("next_action", "finish"),
             {"tools": "tools", "retry": "retry", "finish": END},
         )
-        g.add_edge("tools", "agent")
+        # tools 结束后：澄清/完成（finished=True）→ END（保留快照供 resume）；
+        # 否则回 agent 继续工具循环
+        g.add_conditional_edges(
+            "tools",
+            lambda s: "finish" if s.get("finished") else "agent",
+            {"agent": "agent", "finish": END},
+        )
         g.add_edge("retry", "agent")
         return g.compile()
 
@@ -146,16 +158,16 @@ class ToolLoop:
             wf_content = self.system_context.workflow_router.get_workflow_content(wf_name)
             if wf_content:
                 parts.append(f"\n\n---\n# 工作流: {wf_name}\n{wf_content}")
-                logger.debug(f"工作流已加载: {wf_name}")
             else:
                 logger.warning(f"工作流 '{wf_name}' 未找到")
         else:
             wf_summaries = self.system_context.workflow_router.get_workflow_summaries()
             if wf_summaries:
                 parts.append(
-                    f"\n\n---\n# 工作流\n{wf_summaries}\n"
-                    f"如需加载完整工作流指令，请调用 read_workflow 工具。"
+                    f"\n\n---\n# 可用工作流\n{wf_summaries}\n"
+                    f"如需执行某工作流，请遵循其中的指令，或使用 read_workflow 工具。"
                 )
+
         return "".join(parts)
 
     def _build_tool_context(self, state: dict, extra: dict | None = None) -> ToolContext:
@@ -170,7 +182,8 @@ class ToolLoop:
                 if self.system_context else None
             ),
             config=self.cfg,
-            data_dir=getattr(self.cfg, "storage_data_dir", "") or "",
+            cache=self.cache,
+            object_store=self.object_store,
         )
 
     # ── LLM 调用归一化 ──
@@ -187,38 +200,12 @@ class ToolLoop:
     def _chat_response(self, state: dict, tools, tool_choice) -> ChatResponse:
         """非流式 LLM 调用，返回统一 ChatResponse。"""
         common = self._common_chat_kwargs(tools, tool_choice)
-        chat = self.chat_client
-        if hasattr(chat, "chat_stream"):
-            return chat.chat(messages=state.get("messages"), **common)
-        raw = chat.chat_with_tools(
-            messages=state.get("messages"), model=self.chat_model,
-            stream=False, **common,
-        )
-        return ChatResponse(
-            content=raw.get("content") or "",
-            tool_calls=raw.get("tool_calls") or [],
-            finish_reason=raw.get("finish_reason"),
-        )
+        return self.chat_client.chat(messages=state.get("messages"), **common)
 
     def _chat_events(self, state: dict, tools, tool_choice):
         """流式 LLM 调用，返回 Iterator[ChatStreamEvent]。"""
         common = self._common_chat_kwargs(tools, tool_choice)
-        chat = self.chat_client
-        if hasattr(chat, "chat_stream"):
-            return chat.chat_stream(messages=state.get("messages"), **common)
-
-        def _wrap():
-            for ev in chat.chat_with_tools(
-                messages=state.get("messages"), model=self.chat_model,
-                stream=True, **common,
-            ):
-                yield ChatStreamEvent(
-                    type=ev.get("type", "content"),
-                    text=ev.get("text", ""),
-                    calls=ev.get("calls", []),
-                    reason=ev.get("reason"),
-                )
-        return _wrap()
+        return self.chat_client.chat_stream(messages=state.get("messages"), **common)
 
     # ── 工具执行 ──
 
@@ -238,37 +225,58 @@ class ToolLoop:
 
     @staticmethod
     def _execute_tool_batch(tool_calls: list, ctx: ToolContext) -> dict:
-        """并发执行一批工具调用（按并发安全性分批）。"""
+        """并发执行一批工具调用（按并发安全性分批）。
+
+        任务清单工具（set_todolist / check_todo）改为**按 LLM 调用顺序串行**执行：
+        并发下 check_todo 可能先于 set_todolist 完成，导致首项/多项勾选丢失。
+        """
         import concurrent.futures
 
-        from .tools.registry import ToolRegistry
+        from .tools import registry as _reg
 
         results: dict = {}
-        batches = ToolRegistry.partition_tool_batches(tool_calls)
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(tool_calls)) as executor:
-            for batch in batches:
-                futures = [
-                    executor.submit(ToolLoop._execute_single_tool, tc, ctx)
-                    for tc in batch
-                ]
-                for future in concurrent.futures.as_completed(futures):
-                    tc_id, result = future.result()
-                    results[tc_id] = result
+        todo_names = ("set_todolist", "check_todo")
+        todo_tcs = [tc for tc in tool_calls if tc["name"] in todo_names]
+        others = [tc for tc in tool_calls if tc["name"] not in todo_names]
+
+        # 1) 任务清单工具串行、按调用顺序执行（set_todolist → check_todo 严格有序）
+        for tc in todo_tcs:
+            tc_id, result = ToolLoop._execute_single_tool(tc, ctx)
+            results[tc_id] = result
+
+        # 2) 其余工具并发执行
+        if others:
+            batches = _reg.partition_tool_batches(others)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(others)) as executor:
+                for batch in batches:
+                    futures = [
+                        executor.submit(ToolLoop._execute_single_tool, tc, ctx)
+                        for tc in batch
+                    ]
+                    for future in concurrent.futures.as_completed(futures):
+                        tc_id, result = future.result()
+                        results[tc_id] = result
         return results
 
     @staticmethod
-    def _check_clarification(tool_calls: list) -> str | None:
-        """检查工具调用中是否含 ask_user_for_clarification。"""
+    def _check_clarification(tool_calls: list) -> dict | None:
+        """检查工具调用中是否含 ask_user_for_clarification。
+
+        Returns:
+            ``{"question": str, "options": [...]}`` 或 None。
+        """
         import json as _json
 
         for tc in tool_calls:
             if tc["name"] == "ask_user_for_clarification":
                 try:
-                    return _json.loads(tc.get("arguments", "{}")).get(
-                        "question", "我需要更多信息。"
-                    )
+                    args = _json.loads(tc.get("arguments", "{}"))
+                    return {
+                        "question": args.get("question") or "我需要更多信息。",
+                        "options": args.get("options") or [],
+                    }
                 except Exception:
-                    return "我需要您提供更多背景信息。"
+                    return {"question": "我需要您提供更多背景信息。", "options": []}
         return None
 
     # ── 状态辅助 ──
@@ -338,6 +346,19 @@ class ToolLoop:
             updates["final_answer"] = "已达单次工具调用上限，如已有足够信息可直接给出最终答案。"
             updates["next_action"] = "finish"
             return updates
+
+        # 上下文使用情况事件（前端展示 已用/最大窗口）
+        _cw = state.get("context_window_chars") or 40000
+        _ctx_ev = {
+            "type": "context",
+            "used_chars": total_message_chars(state),
+            "window_chars": _cw,
+            "iterations": state.get("iteration") or 0,
+            "max_iterations": state.get("max_iterations") or 15,
+        }
+        writer(_ctx_ev)
+        if emit:
+            emit(_ctx_ev)
 
         log_llm_input(state.get("messages", []), round=state.get("iteration", 0), suffix="_sent")
 
@@ -482,6 +503,13 @@ class ToolLoop:
                 cnt = len(_re.findall(r"\[搜索结果 \d+\]", res))
                 if cnt:
                     display["chunks"] = cnt
+            elif tc["name"] in ("set_todolist", "check_todo"):
+                # 任务清单工具：把最新清单实时广播给前端勾选
+                writer({"type": "status", "status": "todolist",
+                        "items": _get_todolist(state.get("session_id") or "")})
+                if emit:
+                    emit({"type": "status", "status": "todolist",
+                          "items": _get_todolist(state.get("session_id") or "")})
             writer({"type": "status", "status": "tool_result", **display})
             if emit:
                 emit({"type": "status", "status": "tool_result", **display})
@@ -493,7 +521,14 @@ class ToolLoop:
         q = self._check_clarification(tool_calls)
         if q is not None:
             logger.debug("提前中断工具循环：LLM 需要澄清")
-            updates["clarification"] = q
+            # 把澄清问题与可选答案广播给前端（选择框交互）
+            writer({"type": "status", "status": "ask_user",
+                    "question": q["question"], "options": q["options"] or []})
+            if emit:
+                emit({"type": "status", "status": "ask_user",
+                      "question": q["question"], "options": q["options"] or []})
+            updates["clarification"] = q["question"]
+            updates["clarification_options"] = q["options"] or []
             updates["finished"] = True
             updates["next_action"] = "finish"
             self._persist_turn(updates)
@@ -553,6 +588,9 @@ class ToolLoop:
         if goal_line:
             system_msg += goal_line
             logger.debug(f"注入活跃目标: session={session_id[:8]}")
+        todo_line = _todo_line(session_id)
+        if todo_line:
+            system_msg += todo_line
 
         messages: list = [{"role": "system", "content": system_msg}]
         if history:
@@ -611,7 +649,7 @@ class ToolLoop:
         if not ans:
             ans = last_assistant_content(final.get("messages") or [])
         ans = ans or "抱歉，模型处理请求时发生了错误。"
-        if final.get("finished"):
+        if final.get("finished") and not final.get("clarification"):
             self._clear_checkpoint(final)
         return ans
 
@@ -622,8 +660,17 @@ class ToolLoop:
         def gen():
             reached_end = False
             try:
+                # 初始上下文使用事件（含历史回填）
+                _cw0 = state.get("context_window_chars") or 40000
+                yield {
+                    "type": "context",
+                    "used_chars": total_message_chars(state),
+                    "window_chars": _cw0,
+                    "iterations": state.get("iteration") or 0,
+                    "max_iterations": state.get("max_iterations") or 15,
+                }
                 for ev in self.graph.stream(state, config=config, stream_mode="custom"):
-                    if isinstance(ev, dict) and ev.get("type") in ("token", "reasoning", "status"):
+                    if isinstance(ev, dict) and ev.get("type") in ("token", "reasoning", "status", "context"):
                         if ev.get("type") == "status" and ev.get("status") == "finished":
                             reached_end = True
                         yield ev
@@ -642,12 +689,19 @@ class ToolLoop:
         self,
         session_id: str,
         *,
+        answer: str | None = None,
         extra_iterations: int = 0,
         stream: bool = False,
         cancel_check: Callable[[], bool] | None = None,
         emit_event: Callable[[dict], None] | None = None,
     ):
-        """从最近快照续跑（可加迭代预算）。
+        """从最近快照续跑（可加迭代预算 / 注入澄清答案）。
+
+        Args:
+            session_id: 会话 ID。
+            answer: 用户对澄清问题的回答（附加为一条 user 消息后继续）；
+                None 表示纯断点续跑（中断/崩溃恢复）。
+            extra_iterations: 续跑时额外追加的迭代次数。
 
         Returns:
             非流式返回续跑答案字符串；流式返回事件生成器；无快照返回 None。
@@ -660,11 +714,16 @@ class ToolLoop:
             return None
 
         state = dict(state)
+        messages = list(state.get("messages") or [])
+        if answer is not None and str(answer).strip():
+            messages.append({"role": "user", "content": str(answer).strip()})
+        state["messages"] = messages
         # 归一化：清掉中转信号，让 agent 从当前消息续跑
         state["next_action"] = "agent"
         state["tool_calls"] = None
         state["retry_op"] = None
         state["clarification"] = None
+        state["clarification_options"] = None
         state["final_answer"] = None
         state["finished"] = False
         if extra_iterations:

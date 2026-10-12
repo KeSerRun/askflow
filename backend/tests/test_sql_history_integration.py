@@ -35,7 +35,8 @@ class SqlStorageIntegrationTest(unittest.TestCase):
         u = self.users
         self.assertTrue(u.insert_user("int_alice", "pw1"))
         self.assertFalse(u.insert_user("int_alice", "pw2"))  # 重复
-        self.assertEqual(u.check_user_credentials("INT_alice", "pw1")["username"], "int_alice")
+        self.assertEqual(u.check_user_credentials("int_alice", "pw1")["username"], "int_alice")
+        self.assertIsNone(u.check_user_credentials("INT_alice", "pw1"))  # 大小写敏感
         self.assertIsNone(u.check_user_credentials("int_alice", "wrong"))
         self.assertTrue(u.update_user_role("int_alice", "admin"))
         self.assertTrue(u.update_user_password("int_alice", "newpw"))
@@ -43,7 +44,10 @@ class SqlStorageIntegrationTest(unittest.TestCase):
         self.assertTrue(u.get_all_users(page=1, page_size=100)["total"] >= 1)
 
     def test_session_and_history(self):
-        self.sessions.create("int_s1", "int_alice")
+        self.users.insert_user("int_alice", "pw1")
+        uid = self.users.get_id("int_alice")
+        self.assertIsNotNone(uid)
+        self.sessions.create("int_s1", "int_alice", uid)
         self.assertTrue(self.history.insert_session_history("int_s1", "你好", "你好!"))
         self.assertTrue(self.history.insert_session_turn("int_s1", [{"role": "user", "content": "hi"}]))
         self.assertTrue(self.history.insert_session_event("int_s1", "upload", ["a.pdf"]))
@@ -53,7 +57,7 @@ class SqlStorageIntegrationTest(unittest.TestCase):
         types = {h["type"] for h in hist}
         self.assertEqual(types, {"qa", "turn", "event"})
 
-        sessions = self.sessions.list_sessions("int_alice")
+        sessions = self.sessions.list_sessions(uid)
         self.assertTrue(any(x["id"] == "int_s1" for x in sessions))
 
     def test_archive(self):

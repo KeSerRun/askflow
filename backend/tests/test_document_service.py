@@ -1,109 +1,106 @@
-"""DocumentService 单测：真实管线的保存/入库/清除/事件编排（FakeVector 免外部依赖）。"""
+"""DocumentService 单测：会话附件暂存 + 系统文档入库（FakeVector 免外部依赖）。"""
 
 import os
 import shutil
 import tempfile
 import unittest
 
-from infra.adapters.storage import SqliteRepo
+from core.app_errors import QuotaExceeded
+from fake_object_store import LocalDirObjectStore
 from modules.document.service import DocumentService
-from modules.document.storage_service import StorageService
-from modules.history import HistoryService
 
 
 class FakeVector:
-    """最小向量库替身：记录来源与其 chunk 产物目录。"""
+    """最小向量库替身：记录来源与其 chunk 产物目录（仅实现被测代码会用到的接口）。"""
 
     def __init__(self):
-        self._sources: dict[str, set] = {}
-        self.added: list = []
+        self._sources: set = set()
 
-    def add_documents(self, documents, partition=None):
-        self.added.append((partition, list(documents)))
-
-    def store_documents_from_dir(self, directory, partition=None):
+    def store_documents_from_dir(self, directory):
         source = os.path.basename(directory)
-        self._sources.setdefault(partition, set()).add(source)
+        self._sources.add(source)
         chunk = os.path.join(os.path.dirname(directory), "chunk_out", os.path.splitext(source)[0])
         os.makedirs(os.path.join(chunk, "images"), exist_ok=True)
 
-    def get_sources_by_partition(self, partition=None):
-        return sorted(self._sources.get(partition, set()))
+    def get_sources(self):
+        return sorted(self._sources)
 
-    def delete_by_sources(self, sources, *, partition=None):
-        bucket = self._sources.get(partition, set())
+    def delete_by_sources(self, sources):
         for s in sources:
-            bucket.discard(os.path.basename(s))
-
-    def delete_by_partition(self, partition=None):
-        self._sources.pop(partition, None)
-
-    def count(self):
-        return len(self.added)
-
-    def search(self, query, top_k=10, *, partition=None, source_filter=None):
-        return []
+            self._sources.discard(os.path.basename(s))
 
 
 class DocumentServiceTest(unittest.TestCase):
     def setUp(self):
         self.data_dir = tempfile.mkdtemp()
         self.vector = FakeVector()
-        self.history = HistoryService(SqliteRepo("sqlite:///:memory:"))
-        self.storage = StorageService(data_dir=self.data_dir, max_user_mb=0)
-        self.svc = DocumentService(self.vector, self.history, self.storage, data_dir=self.data_dir)
+        self.svc = DocumentService(
+            self.vector,
+            object_store=LocalDirObjectStore(self.data_dir),
+            max_session_mb=1,  # 会话上限 1MB 便于测试
+        )
 
     def tearDown(self):
         shutil.rmtree(self.data_dir, ignore_errors=True)
 
-    def _upload_dir(self, user="alice"):
+    def _upload_dir(self, user="__system__"):
         return os.path.join(self.data_dir, "uploads", user)
 
+    def _session_dir(self, user="alice", sid="s1"):
+        return os.path.join(self.data_dir, "sessions", user, sid)
+
+    # ── 系统文档入库（管理端路径） ──
+
     def test_upload_saves_indexes_and_writes_artifacts(self):
-        res = self.svc.upload("Alice", "report.pdf", b"%PDF-fake")
+        res = self.svc.upload("__system__", "report.pdf", b"%PDF-fake")
 
         self.assertEqual(res.filename, "report.pdf")
         self.assertTrue(os.path.isfile(os.path.join(self._upload_dir(), "report.pdf")))
-        self.assertEqual(self.vector.get_sources_by_partition("alice"), ["report.pdf"])
+        self.assertEqual(self.vector.get_sources(), ["report.pdf"])
         self.assertTrue(os.path.isdir(os.path.join(self._upload_dir(), "chunk_out", "report")))
 
-    def test_save_uploads_records_event(self):
-        self.svc.save_uploads(
-            "alice",
-            [("a.pdf", b"%PDF", "application/pdf"), ("b.pdf", b"%PDF", "application/pdf")],
-            session_id="s1",
-        )
-        hist = self.history.get_session_history("s1")
-        self.assertTrue(any(h.get("type") == "event" and h.get("event_type") == "upload"
-                            and set(h.get("files", [])) == {"a.pdf", "b.pdf"} for h in hist))
-
-    def test_clear_sources_removes_vectors_files_and_artifacts(self):
-        self.svc.upload("alice", "a.pdf", b"%PDF")
-        self.svc.clear_sources("alice", ["a.pdf"], session_id="s1")
-
-        self.assertEqual(self.vector.get_sources_by_partition("alice"), [])
-        self.assertFalse(os.path.exists(os.path.join(self._upload_dir(), "a.pdf")))
-        self.assertFalse(os.path.exists(os.path.join(self._upload_dir(), "chunk_out", "a")))
-
-    def test_clear_all_removes_user_dir(self):
-        self.svc.upload("alice", "a.pdf", b"%PDF")
-        self.svc.clear_all("alice", session_id="s1")
-
-        self.assertEqual(self.vector.get_sources_by_partition("alice"), [])
-        self.assertFalse(os.path.isdir(self._upload_dir()))
-
     def test_upload_overwrite_forgets_old_vectors(self):
-        self.svc.upload("alice", "a.pdf", b"%PDF")
-        self.svc.upload("alice", "a.pdf", b"%PDF-new")
-        self.assertEqual(self.vector.get_sources_by_partition("alice"), ["a.pdf"])
+        self.svc.upload("__system__", "a.pdf", b"%PDF")
+        self.svc.upload("__system__", "a.pdf", b"%PDF-new")
+        self.assertEqual(self.vector.get_sources(), ["a.pdf"])
 
-    def test_add_directory_indexes_existing_path(self):
-        os.makedirs(self._upload_dir(), exist_ok=True)
-        target = os.path.join(self._upload_dir(), "x.pdf")
-        with open(target, "wb") as f:
-            f.write(b"%PDF")
-        self.svc.index_path("alice", target)
-        self.assertEqual(self.vector.get_sources_by_partition("alice"), ["x.pdf"])
+    # ── 会话附件暂存（只落盘，不解析/不入库） ──
+
+    def test_session_stage_only_writes_no_vector(self):
+        saved = self.svc.save_session_files(
+            "alice", "s1", [("a.pdf", b"%PDF", "application/pdf")],
+        )
+        self.assertEqual(saved[0]["filename"], "a.pdf")
+        self.assertTrue(os.path.isfile(os.path.join(self._session_dir(), "a.pdf")))
+        # 关键：不进向量库、无 chunk 产物
+        self.assertEqual(self.vector.get_sources(), [])
+        self.assertFalse(os.path.isdir(os.path.join(self._session_dir(), "chunk_out")))
+
+    def test_session_quota_enforced(self):
+        big = b"x" * (2 * 1024 * 1024)  # 2MB > 1MB 上限
+        with self.assertRaises(QuotaExceeded):
+            self.svc.save_session_files("alice", "s1", [("big.bin", big, "application/octet-stream")])
+
+    def test_session_isolation_between_sessions(self):
+        self.svc.save_session_files("alice", "s1", [("a.txt", b"a", "text/plain")])
+        self.svc.save_session_files("alice", "s2", [("b.txt", b"b", "text/plain")])
+        self.assertEqual([f["name"] for f in self.svc.list_session_files("alice", "s1")], ["a.txt"])
+        self.assertEqual([f["name"] for f in self.svc.list_session_files("alice", "s2")], ["b.txt"])
+
+    def test_session_delete_and_clear(self):
+        self.svc.save_session_files("alice", "s1", [
+            ("a.txt", b"a", "text/plain"), ("b.txt", b"b", "text/plain"),
+        ])
+        self.svc.delete_session_file("alice", "s1", "a.txt")
+        self.assertEqual([f["name"] for f in self.svc.list_session_files("alice", "s1")], ["b.txt"])
+        self.svc.clear_session_files("alice", "s1")
+        self.assertEqual(self.svc.list_session_files("alice", "s1"), [])
+
+    def test_session_usage_reports_limit(self):
+        self.svc.save_session_files("alice", "s1", [("a.txt", b"a", "text/plain")])
+        usage = self.svc.session_usage("alice", "s1")
+        self.assertEqual(usage["max_mb"], 1)
+        self.assertTrue(usage["limit_enabled"])
 
 
 if __name__ == "__main__":

@@ -47,45 +47,40 @@ class CachedVectorStore:
 
     # ── 读（缓存） ──
 
-    def get_sources_by_partition(self, partition=None):
-        return self._read("sources", (partition,),
-                          lambda: self._store.get_sources_by_partition(partition))
+    def get_sources(self):
+        return self._read("sources", (),
+                          lambda: self._store.get_sources())
 
-    def get_documents_by_partition(self, partition=None):
-        return self._read("sources", (partition,),
-                          lambda: self._store.get_documents_by_partition(partition))
+    def get_documents(self):
+        return self._read("sources", (),
+                          lambda: self._store.get_documents())
 
     def count(self) -> int:
         return self._read("count", (), lambda: self._store.count())
 
     # ── 写（失效） ──
 
-    def add_documents(self, documents, partition=None):
-        result = self._store.add_documents(documents, partition=partition)
+    def add_documents(self, documents):
+        result = self._store.add_documents(documents)
         self._bump()
         return result
 
-    def store_documents_from_dir(self, directory, partition=None):
-        result = self._store.store_documents_from_dir(directory, partition=partition)
+    def store_documents_from_dir(self, directory):
+        result = self._store.store_documents_from_dir(directory)
         self._bump()
         return result
 
-    def delete_by_sources(self, sources, *, partition=None):
-        result = self._store.delete_by_sources(sources, partition=partition)
+    def delete_by_sources(self, sources):
+        result = self._store.delete_by_sources(sources)
         self._bump()
         return result
 
-    def delete_documents_by_sources(self, sources, partition=None):
-        result = self._store.delete_documents_by_sources(sources, partition=partition)
+    def delete_documents_by_sources(self, sources):
+        result = self._store.delete_documents_by_sources(sources)
         self._bump()
         return result
 
-    def delete_by_partition(self, partition=None):
-        result = self._store.delete_by_partition(partition=partition)
-        self._bump()
-        return result
-
-    def delete_documents_by_partition(self, partition=None):
-        result = self._store.delete_documents_by_partition(partition=partition)
+    def delete_all(self):
+        result = self._store.delete_all()
         self._bump()
         return result

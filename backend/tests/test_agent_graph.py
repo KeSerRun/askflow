@@ -12,14 +12,15 @@ from agent.checkpoint import CheckpointStore
 from agent.context import SystemContext
 from core.models import ChatResponse, ChatStreamEvent
 from infra.adapters.storage import SqliteRepo
+from modules.tools import ToolService
 
 PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
 
-# 一轮工具调用（read_workflow，无外部依赖） → 一轮最终答案
+# 一轮工具调用（set_goal，无外部依赖） → 一轮最终答案
 _TOOL_CALL = {
     "id": "call_1",
-    "name": "read_workflow",
-    "arguments": '{"name": "Briefing"}',
+    "name": "set_goal",
+    "arguments": '{"goal": "Briefing"}',
 }
 _SCRIPT = [
     ("", [_TOOL_CALL], "tool_calls"),
@@ -87,13 +88,22 @@ def _loop(script, max_iter=5, data_store=None, checkpoint_store=None):
 
 
 class AgentGraphTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # 运行时工具只从数据库加载：用内存库种子 + load_defs 填充全局注册表
+        from agent.tools import registry as _reg
+
+        svc = ToolService(SqliteRepo("sqlite:///:memory:"))
+        svc.seed_builtins()
+        _reg.load_defs(svc.runtime_defs())
+
     def test_nonstream_tool_loop_returns_final_answer(self):
         ds = FakeDataStore()
         loop = _loop(_SCRIPT, data_store=ds)
         ans = loop.generate_answer("你好", session_id="s1", partition="u")
         self.assertEqual(ans, "最终答案")
         self.assertTrue(ds.turns, "回合应被持久化")
-        # 工具结果也应在历史里（read_workflow 的返回）
+        # 工具结果也应在历史里（set_goal 的返回）
         joined = "".join(str(m.get("content", "")) for turn in ds.turns for m in turn)
         self.assertIn("Briefing", joined)
 

@@ -37,11 +37,10 @@ class ApiSmokeTest(unittest.TestCase):
             "/api/login",
             "/api/register",
             "/api/styles",
-            "/api/workflows",
             "/api/query",
             "/api/query/cancel",
-            "/api/upload",
-            "/api/documents/{username}",
+            "/api/session_files",
+            "/api/session_files/upload",
         ]
         for route in expected:
             self.assertIn(route, self.paths, f"missing {route}")

@@ -35,7 +35,7 @@ description: 对比分析工作流 —— 多实体并行搜索 → 维度提取
 
 > ⚠️ 每个实体单独搜索，不要混在同一个 query 中。每个实体搜索 1–2 次即可，不要重复。
 >
-> 💡 如果某篇搜索结果看起来信息量很大，可使用 `read_url` 阅读全文获取详细数据。
+> 💡 如果用户附件是几份截图/图表需要对比，先用 `ocr_image` 逐张读出文字；某篇搜索结果信息量大，可用 `read_url` 阅读全文获取详细数据。
 
 信息收集完毕后进入下一步。
 
@@ -106,10 +106,11 @@ description: 对比分析工作流 —— 多实体并行搜索 → 维度提取
 |------|------|
 | `web_search` | 联网搜索各实体的信息 |
 | `read_url` | 阅读搜索结果获取详细数据 |
-| `search_knowledge_base` | 检索知识库中的相关资料 |
+| `search_knowledge_base` | 检索知识库中的相关资料（`mode`：mixed/text/image） |
 | `search_document_content` | 在文档全文中搜索对比对象 |
+| `ocr_image` | 读取用户截图/图表中的文字 |
 | `list_documents` | 查看知识库文档清单 |
 | `read_chunk_context` | 查看检索结果上下文 |
 | `read_full_document` | 阅读文档全文 |
-| `spawn_subagent` | 并行搜索多个对比实体 |
+| `set_todolist` / `check_todo` | （多步时）建立并勾选对比步骤 |
 | `my` | 查看当前工具调用统计 |

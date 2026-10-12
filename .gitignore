@@ -50,9 +50,6 @@ data/users.json
 data/sessions.json
 data/qa_pairs.json
 data/history/
-# 本地向量存储（FAISS 版，替代 Milvus）
-data/vector_store/dense_vectors.npy
-data/vector_store/metadata.json
 
 # MinerU PDF 解析中间产物（上传 PDF 同目录下生成）
 **/chunk_out/
@@ -128,3 +125,4 @@ dist/
 .claude/
 *.lock
 IDEA.md
+*.exe

@@ -1,21 +1,27 @@
-"""工具注册中心：ToolRegistry + ToolContext + ToolDef
+"""工具注册中心：ToolRegistry + ToolContext + ToolDef + DB 装载
 
 设计目标:
-  - 工具通过 registry.register() 注册，不再写 if/elif 链
+  - 工具通过 registry.register() 注册，不再写 if/elif 链；
+  - **运行时工具一律从数据库装载**：``load_defs()`` 读 ``agent_tools`` 行，
+    经 ``_resolve_def`` 解析为 ``(args, ctx) -> str`` handler；
+  - ``BUILTIN_TOOLS``/``collect_tools`` **仅用于启动时把内建工具种子写入数据库**，
+    不参与运行时装载（无兜底注册）。
 
-数据流:
-  1. handler 模块在导入时被执行，其中的 _exec_* 函数被注册到 ToolRegistry
-  2. __init__.py 调用 register_all_builtins(registry) 完成注册
-  3. LLM 通过 registry.dispatch(name, args_json) 调用工具
+文件结构：
+  - 工具 handler 按功能拆为 ``_kb_handlers`` / ``_web_handlers`` / ``_infra_handlers``，
+    各模块只含 ``@tool`` 的 ``_exec_*`` 入口；辅助函数在 ``_common``；
+  - 运行时粘合（ctx contextvar / BaseTool 适配）在 ``_context``。
 """
 
 from __future__ import annotations
 
+import importlib
 import json
+import re
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from infra.logger import logger
+from infra.util.logger import logger
 
 
 # ── 数据类定义 ──
@@ -30,18 +36,17 @@ class ToolContext:
         partition: 当前会话的分区标识（用户分区）。
         data_store: 持久化数据存储实例。
         session_id: 当前会话 ID。
-        workflow_router: 工作流路由实例，用于按需获取工作流内容。
-        llm_client: LLM 客户端实例。
     """
     vector_store: object
     partition: Optional[str] = None
     data_store: Optional[object] = None
     session_id: str = ""
-    workflow_router: Optional[object] = None
-    # 运行时注入（避免 handler 读全局 conf）：数据根目录 / 对象存储 / 配置对象
-    data_dir: str = ""
+    # 运行时注入（避免 handler 读全局 conf）：对象存储 / 配置对象 / 缓存
     object_store: Optional[object] = None
     config: Optional[object] = None
+    cache: Optional[object] = None
+    # 工作流路由（read_workflow 等需要）
+    workflow_router: Optional[object] = None
 
 
 @dataclass
@@ -53,7 +58,7 @@ class ToolDef:
         description: 工具功能描述。
         parameters: JSON Schema 格式的参数定义。
         handler: 工具执行函数，签名 (args: dict, ctx: ToolContext) -> str。
-        source: 注册来源模块名。
+        source: 注册来源。
     """
     name: str
     description: str
@@ -87,18 +92,15 @@ class ToolRegistry:
     管理所有注册工具的生命周期，包括注册、查询、调度、并发控制、重复查询拦截和参数校验。
     """
 
-    _CONCURRENT_SAFE = {
-        "search_knowledge_base", "read_chunk_context",
-        "read_document_titles", "list_documents",
-    }
-
     _MAX_REPEAT_EXTERNAL_LOOKUPS = 2
 
     def __init__(self):
         """初始化空的注册中心。"""
         self._tools: dict[str, ToolDef] = {}
+        self._concurrent_safe: set[str] = set()   # 并发安全名单（随工具定义注册，DB 驱动）
         self.call_counts: dict[str, int] = {}
         self._external_lookup_counts: dict[str, int] = {}
+        self._on_call: Optional[Callable[[str], None]] = None   # 调用后回调（持久化计数）
 
     def register(
         self,
@@ -107,6 +109,7 @@ class ToolRegistry:
         parameters: dict,
         handler: Callable[[dict, ToolContext], str],
         source: str = "",
+        concurrent_safe: bool = False,
     ) -> ToolDef:
         """注册一个工具。
 
@@ -117,7 +120,8 @@ class ToolRegistry:
             description: 工具功能描述。
             parameters: JSON Schema 格式的参数定义字典。
             handler: 工具执行函数，签名 (args: dict, ctx: ToolContext) -> str。
-            source: 注册来源模块名（可选）。
+            source: 注册来源（seed / db）。
+            concurrent_safe: 是否可与其他工具并行执行。
 
         Returns:
             新创建的 ToolDef 实例。
@@ -127,43 +131,26 @@ class ToolRegistry:
         tool = ToolDef(name=name, description=description,
                        parameters=parameters, handler=handler, source=source)
         self._tools[name] = tool
+        if concurrent_safe:
+            self._concurrent_safe.add(name)
+        else:
+            self._concurrent_safe.discard(name)
         return tool
 
     @property
     def schemas(self) -> List[dict]:
-        """获取所有已注册工具的 OpenAI 兼容 schema 列表。
-
-        Returns:
-            schema 字典列表，每个元素符合 OpenAI function calling 格式。
-        """
+        """获取所有已注册工具的 OpenAI 兼容 schema 列表。"""
         return [t.schema for t in self._tools.values()]
 
-
     def get(self, name: str) -> Optional[ToolDef]:
-        """根据工具名称查找已注册的工具定义。
-
-        Args:
-            name: 工具名称。
-
-        Returns:
-            ToolDef 实例，未找到时返回 None。
-        """
+        """根据工具名称查找已注册的工具定义。"""
         return self._tools.get(name)
 
-    @classmethod
-    def is_concurrent_safe(cls, tool_name: str) -> bool:
-        """判断工具是否可以与其他工具并行执行。
+    def is_concurrent_safe(self, tool_name: str) -> bool:
+        """判断工具是否可以与其他工具并行执行（并发安全名单随定义注册）。"""
+        return tool_name in self._concurrent_safe
 
-        Args:
-            tool_name: 工具名称。
-
-        Returns:
-            如果工具是并发安全的返回 True，否则返回 False。
-        """
-        return tool_name in cls._CONCURRENT_SAFE
-
-    @classmethod
-    def partition_tool_batches(cls, tool_calls: list[dict]) -> list[list[dict]]:
+    def partition_tool_batches(self, tool_calls: list[dict]) -> list[list[dict]]:
         """将工具调用分批：并发安全的一批，不安全的一个一个来。
 
         对应 nanobot 的 _partition_tool_batches 模式。
@@ -178,7 +165,7 @@ class ToolRegistry:
         sequential = []
         for tc in tool_calls:
             name = tc.get("name", "") if isinstance(tc, dict) else ""
-            if cls.is_concurrent_safe(name):
+            if self.is_concurrent_safe(name):
                 concurrent.append(tc)
             else:
                 sequential.append(tc)
@@ -191,25 +178,16 @@ class ToolRegistry:
         return batches
 
     def reset_external_lookup_counts(self):
-        """每轮请求开始时调用，重置重复查询计数。
-
-        避免跨轮次的重复调用检测误判。
-        """
+        """每轮请求开始时调用，重置重复查询计数。"""
         self._external_lookup_counts.clear()
+
+    def set_call_listener(self, fn) -> None:
+        """注册「工具被调用后」回调（用于把计数持久化到 DB）。"""
+        self._on_call = fn
 
     @staticmethod
     def _external_lookup_signature(name: str, args: dict) -> str | None:
-        """生成外部查询的稳定签名，用于重复检测。
-
-        目前支持 web_search 和 read_url 两种外部查询类型。
-
-        Args:
-            name: 工具名称。
-            args: 工具参数字典。
-
-        Returns:
-            签名字符串，如果该工具不是外部查询则返回 None。
-        """
+        """生成外部查询的稳定签名，用于重复检测（web_search / read_url）。"""
         if name == "web_search":
             q = (args.get("query") or "").strip()
             return f"web_search:{q.lower()}" if q else None
@@ -223,14 +201,6 @@ class ToolRegistry:
 
         完整流程：参数反序列化 → 工具查找 → 参数校验 → 重复查询拦截 →
         调用计数 → handler 执行 → 异常兜底。
-
-        Args:
-            name: 工具名称。
-            args_json: JSON 字符串格式的工具参数。
-            ctx: 工具运行时上下文。
-
-        Returns:
-            工具执行结果字符串，异常时返回友好错误提示。
         """
         try:
             args = json.loads(args_json) if args_json else {}
@@ -261,6 +231,13 @@ class ToolRegistry:
 
         self.call_counts[name] = self.call_counts.get(name, 0) + 1
 
+        # 持久化计数（agent_tools.call_count）
+        if self._on_call is not None:
+            try:
+                self._on_call(name)
+            except Exception:  # noqa: BLE001 计数失败不影响主流程
+                pass
+
         logger.debug(f"工具调用: {name} (累计: {self.call_counts[name]})")
 
         try:
@@ -270,19 +247,38 @@ class ToolRegistry:
             logger.error(f"工具 {name!r} 执行失败: {e}")
             return f"(工具执行失败: {e}。请尝试其他工具或根据已有信息回答。)"
 
-    @staticmethod
-    def _validate_params(args: dict, schema: dict) -> str | None:
-        """轻量参数校验。
-
-        检查必填参数是否存在、类型是否匹配。
+    def load_defs(self, defs) -> None:
+        """以 DB 定义为准重建工具表。
 
         Args:
-            args: 实际传入的参数。
-            schema: JSON Schema 参数定义。
-
-        Returns:
-            错误消息字符串，校验通过时返回 None。
+            defs: 形如 ``[{name, description, parameters, code, module}]`` 的列表；
+                  每项由 ``_resolve_def`` 解析为运行时 handler。
         """
+        self._tools.clear()
+        for d in defs or []:
+            name = (d.get("name") or "").strip()
+            if not name:
+                continue
+
+            try:
+                handler, source = _resolve_def(d)
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"解析工具 {name!r} 失败: {e}")
+                continue
+
+            self.register(
+                name,
+                d.get("description") or "",
+                d.get("parameters") or {},
+                handler,
+                source=source,
+                concurrent_safe=bool(d.get("concurrent_safe", False)),
+            )
+        logger.info(f"工具注册表已按数据库重建: {sorted(self._tools.keys())}")
+
+    @staticmethod
+    def _validate_params(args: dict, schema: dict) -> str | None:
+        """轻量参数校验（必填 + 类型）。"""
         props = schema.get("properties", {})
         required = schema.get("required", [])
 
@@ -306,387 +302,97 @@ class ToolRegistry:
         return None
 
 
-# ── 内建工具注册 ──
+# ── handler 装载 ──
+
+_FUNC_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def register_all_builtins(reg: ToolRegistry) -> None:
-    """注册全部内建工具。
+def build_handler(code: str, module: str | None = None):
+    """把**内联 Python 源码**编译为可调用的 ``handle(args, ctx)``。
 
-    Args:
-        reg: ToolRegistry 实例
+    代码须定义 ``def handle(args, ctx) -> str``；``module`` 指定时在其模块命名空间内
+    execute（共享模块级状态）。
+
+    Raises:
+        ValueError: 代码未定义可调用的 ``handle``。
     """
+    if module:
+        ns = importlib.import_module(module).__dict__
+    else:
+        ns = {"__builtins__": __builtins__, "json": json, "re": re, "logger": logger}
+    exec(compile(code or "", "<agent-tool>", "exec"), ns)
+    handler = ns.get("handle")
+    if not callable(handler):
+        raise ValueError("工具 code 必须定义 handle(args, ctx) 函数")
+    return handler
 
-    # -- 基础工具：澄清 / 目标 / 状态 --
-    from ._kb_handlers import (
-        _exec_search_kb, _exec_read_full_document,
-        _exec_list_documents, _exec_read_chunk_context,
-        _exec_read_document_titles, _exec_read_section,
-        _exec_search_document_content,
-    )
-    from ._web_handlers import _exec_web_search, _exec_read_url
-    from ._infra_handlers import (
-        _exec_ask_clarification,
-        _exec_set_goal,
-        _exec_complete_goal,
-        _exec_my,
-        _exec_read_workflow,
-    )
 
-    reg.register(
-        name="ask_user_for_clarification",
-        description=(
-            "当用户请求模糊（指代不清、未指定具体文档）且已有检索结果不足以推断时，"
-            "调用此工具向用户提问以获取补充信息。调用后对话中断，等待用户回复。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "question": {
-                    "type": "string",
-                    "description": "你需要向用户询问的具体问题，比如'请问您指的是本季度的哪一份财报？'",
-                },
-            },
-            "required": ["question"],
-        },
-        handler=_exec_ask_clarification,
-        source=__name__,
-    )
+# ── 内建工具：仅用于「启动时种子写入数据库」，不参与运行时装载 ──
 
-    reg.register(
-        name="set_goal",
-        description=(
-            "设置当前会话的持续目标。目标会持续注入 system prompt，"
-            "在后续多轮对话中自动保留上下文。适合用户交代需要多步完成的任务时调用。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "goal": {
-                    "type": "string",
-                    "description": "目标的详细描述，LLM 应该努力完成的目标。",
-                },
-            },
-            "required": ["goal"],
-        },
-        handler=_exec_set_goal,
-        source=__name__,
-    )
+BUILTIN_TOOLS = []
 
-    reg.register(
-        name="complete_goal",
-        description=("标记当前目标已完成。当用户确认目标已完成时调用。"),
-        parameters={"type": "object", "properties": {}, "required": []},
-        handler=_exec_complete_goal,
-        source=__name__,
-    )
 
-    reg.register(
-        name="my",
-        description=(
-            "查看当前会话的运行时状态和配置（模型、迭代上限、上下文窗口、检索参数等）。"
-            "my(action='check') 查看完整状态，my(action='check', key='model') 查看单项。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "action": {
-                    "type": "string",
-                    "description": "要执行的操作：check（查看状态）。",
-                },
-                "key": {
-                    "type": "string",
-                    "description": "要查看的配置项关键词。不传则显示全部。",
-                },
-            },
-            "required": ["action"],
-        },
-        handler=_exec_my,
-        source=__name__,
-    )
+def register_custom_tools_package(custom_dir: str) -> None:
+    """把 ``custom_dir`` 注册为可导入包 ``custom_tools``（向 sys.modules 注入包对象）。
 
-    reg.register(
-        name="read_workflow",
-        description=(
-            "读取工作流的完整分步指令。可用工作流及摘要已在 system prompt 中列出。"
-            "如需使用某个工作流，先调用此工具获取完整指令，再按步骤执行。"
-            "当前工作流：Briefing（简报）、Comparison（对比）、DeepResearch（深度研究）、"
-            "Autoplan（自动规划）、USstocks（美股分析）。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "name": {
-                    "type": "string",
-                    "description": "工作流名称，如 USstocks、Autoplan、DeepResearch",
-                },
-            },
-            "required": ["name"],
-        },
-        handler=_exec_read_workflow,
-        source=__name__,
-    )
+    之后 ``import custom_tools.{name}`` 即可加载该目录下的源码文件模块，
+    供自定义工具的 ``handler_module=custom_tools.{name}`` 在运行时使用。
+    """
+    import sys
+    import types
+    from pathlib import Path
 
-    reg.register(
-        name="search_knowledge_base",
-        description=(
-            "知识库语义检索（嵌入模型取决于系统配置），覆盖文本、表格、图片图表。"
-            "支持多 query 检索（最多 10 个），自动 RRF 融合排序。多 query 可覆盖不同方面或不同数据来源。"
-            "set search_system=false 仅搜用户文档。"
-            "top_k 指定返回数量，默认取系统候选值，上限由系统检索配置决定。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "queries": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "minItems": 1,
-                    "maxItems": 10,
-                    "description": (
-                        "检索查询列表。简单问题 1 个；多焦点问题拆 2-10 个子查询。"
-                        "用名词短语而非完整问句。"
-                    ),
-                },
-                "search_system": {
-                    "type": "boolean",
-                    "description": ("是否同时搜索系统公开文档。默认为 true（搜索全部）。"
-                                     "设为 false 则只搜索用户自己的文档。"),
-                    "default": True,
-                },
-                "top_k": {
-                    "type": "integer",
-                    "description": (
-                        "返回的结果数量（默认取系统候选值，上限由系统配置决定）。"
-                        "需要粗略概览时适当减小，需要全面排查时增加。"
-                    ),
-                },
-            },
-            "required": ["queries"],
-        },
-        handler=_exec_search_kb,
-        source=__name__,
-    )
+    pkg = types.ModuleType("custom_tools")
+    pkg.__path__ = [str(Path(custom_dir))]
+    pkg.__package__ = "custom_tools"
+    sys.modules.setdefault("custom_tools", pkg)
 
-    reg.register(
-        name="read_full_document",
-        description=(
-            "读取某篇文档的完整全文（Markdown 格式）。支持 offset 分页（默认每页取系统分页值字符）。"
-            "文件名必须是文档清单中的完整文件名（含扩展名）。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "filename": {
-                    "type": "string",
-                    "description": (
-                        "要读取的文档文件名（含扩展名）。"
-                        "必须是文档清单中出现的完整文件名，如 KD指标.pdf"
-                    ),
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "字符偏移位置，用于分页读取（默认 0）。末尾会提示后续 offset。",
-                    "default": 0,
-                },
-                "max_chars": {
-                    "type": "integer",
-                    "description": "本次最多读取字符数（默认取系统分页值，建议不超过其 5 倍）。",
-                },
-            },
-            "required": ["filename"],
-        },
-        handler=_exec_read_full_document,
-        source=__name__,
-    )
 
-    reg.register(
-        name="read_url",
-        description=(
-            "读取指定网页的完整文字内容（超时由系统配置决定）。仅限公开可访问的网页。"
-            "支持 offset 分页（默认每页取系统分页值字符）。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "要读取的网页完整 URL（必须以 http:// 或 https:// 开头）",
-                },
-                "offset": {
-                    "type": "integer",
-                    "description": "读取起始偏移（字符数，默认 0）",
-                },
-                "max_chars": {
-                    "type": "integer",
-                    "description": "本次最多读取字符数（默认取系统分页值，建议不超过其 5 倍）。",
-                },
-            },
-            "required": ["url"],
-        },
-        handler=_exec_read_url,
-        source=__name__,
-    )
+def collect_tools(*modules) -> list[dict]:
+    """扫描 handler 模块中的 ``BaseTool``，登记到 ``BUILTIN_TOOLS``（供 seed_builtins 写入库）。"""
+    from langchain_core.tools import BaseTool
 
-    reg.register(
-        name="web_search",
-        description=(
-            "搜索互联网获取最新信息（实时新闻、数据等知识库未覆盖的内容）。"
-            "搜索后端由系统配置决定。返回结果包含标题、摘要和来源链接。"
-            "max_results 控制返回数量（1-10，默认 5）。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "搜索关键词，用名词短语或简洁问句。",
-                },
-                "max_results": {
-                    "type": "integer",
-                    "default": 5,
-                    "description": "返回结果数量（1-10）。",
-                },
-            },
-            "required": ["query"],
-        },
-        handler=_exec_web_search,
-        source=__name__,
-    )
+    BUILTIN_TOOLS.clear()
+    for mod in modules:
+        modname = getattr(mod, "__name__", "")
+        for name in list(vars(mod)):
+            obj = getattr(mod, name)
+            if not isinstance(obj, BaseTool):
+                continue
+            fn = getattr(obj, "func", None)
+            BUILTIN_TOOLS.append({
+                "name": obj.name,
+                "module": modname,
+                "handler": getattr(fn, "__name__", None) or obj.name,
+                "description": getattr(obj, "description", "") or "",
+                "parameters": obj.args_schema.model_json_schema(),
+                "concurrent_safe": bool((getattr(obj, "metadata", None) or {}).get("concurrency_safe", False)),
+            })
+    return BUILTIN_TOOLS
 
-    reg.register(
-        name="list_documents",
-        description=(
-            "列出知识库中的文档清单。支持 pattern 关键词过滤（如「KD」「择时」），"
-            "list_system=false 仅列用户自己的文档。返回文档名、类型、大小、修改时间。"
-            "可先调用此工具查看可用文档，再使用 read_full_document 读取具体内容。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "pattern": {
-                    "type": "string",
-                    "description": "可选的文件名关键词（如「KD」「财报」），不传则列出全部。",
-                },
-                "list_system": {
-                    "type": "boolean",
-                    "description": ("是否同时列出系统公开文档。默认为 true（列出全部）。"
-                                     "设为 false 则只列用户自己的文档。"),
-                    "default": True,
-                },
-                "sort_by": {
-                    "type": "string",
-                    "enum": ["name", "time"],
-                    "description": "排序方式：name（按名称，默认）或 time（按修改时间）。",
-                    "default": "name",
-                },
-            },
-            "required": [],
-        },
-        handler=_exec_list_documents,
-        source=__name__,
-    )
 
-    reg.register(
-        name="read_chunk_context",
-        description=(
-            "读取某一片段前后的相邻文档内容。当检索到的片段内容不完整、"
-            "图表标题需要查看正文、同主题片段分散时使用。"
-            "chunk_id 从检索结果标头 [id=] 获取，before/after 控制前后取多少块（默认 3，最大 10）。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "chunk_id": {
-                    "type": "string",
-                    "description": "目标片段的 ID，从检索结果标头 [id=] 字段获取。",
-                },
-                "before": {
-                    "type": "integer",
-                    "default": 3,
-                    "description": "向前取多少块（默认 3，最大 10）。",
-                },
-                "after": {
-                    "type": "integer",
-                    "default": 3,
-                    "description": "向后取多少块（默认 3，最大 10）。",
-                },
-            },
-            "required": ["chunk_id"],
-        },
-        handler=_exec_read_chunk_context,
-        source=__name__,
-    )
+def _resolve_def(d: dict) -> tuple[callable, str]:
+    """把 DB 定义解析为 ``(args, ctx) -> str`` 运行时 handler（路径唯一，失败即抛错）。
 
-    reg.register(
-        name="read_document_titles",
-        description=(
-            "读取某篇文档的标题目录结构。返回文档内所有级别的标题列表，"
-            "方便快速定位感兴趣的内容。再配合 read_section 或 read_full_document 读取具体内容。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "source": {
-                    "type": "string",
-                    "description": "文档文件名（含扩展名），如 KD指标.pdf",
-                },
-            },
-            "required": ["source"],
-        },
-        handler=_exec_read_document_titles,
-        source=__name__,
-    )
+    - ``code`` 为**纯函数名**且提供 ``module`` → 模块属性是 langchain ``BaseTool``，
+      用 ``make_runtime_handler`` 适配（``BaseTool.invoke``）；
+    - 否则 ``code`` 为**内联 Python**（``def handle(args, ctx)``）→ ``build_handler`` 编译。
 
-    reg.register(
-        name="read_section",
-        description=(
-            "根据文档名和标题关键词，读取该标题下的正文内容。"
-            "heading 支持模糊匹配。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "source": {
-                    "type": "string",
-                    "description": "文档文件名（含扩展名），如 KD指标.pdf",
-                },
-                "heading": {
-                    "type": "string",
-                    "description": "标题关键词，匹配任意级别的标题。如「第一章」「1.1 背景」「风险收益」",
-                },
-            },
-            "required": ["source", "heading"],
-        },
-        handler=_exec_read_section,
-        source=__name__,
-    )
-
-    reg.register(
-        name="search_document_content",
-        description=(
-            "在所有知识库文档的全文内容中搜索关键词（大小写不敏感），"
-            "返回匹配的文档名和行号。类似于全文 grep。"
-            "可指定 source 限定仅搜索某篇文档，max_results 控制返回数量（1-50，默认 10）。"
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "keyword": {
-                    "type": "string",
-                    "description": "搜索关键词（大小写不敏感）。",
-                },
-                "source": {
-                    "type": "string",
-                    "description": "可选：限定仅搜索某篇文档（含扩展名）。",
-                },
-                "max_results": {
-                    "type": "integer",
-                    "default": 10,
-                    "description": "最大返回匹配数量（1-50，默认 10）。",
-                },
-            },
-            "required": ["keyword"],
-        },
-        handler=_exec_search_document_content,
-        source=__name__,
-    )
+    Raises:
+        Exception: 模块/函数不存在、或内联代码无法编译。
+    """
+    code = (d.get("code") or "").strip()
+    module = d.get("module")
+    if code and module and _FUNC_NAME_RE.match(code):
+        mod = importlib.import_module(module)
+        obj = getattr(mod, code)
+        from langchain_core.tools import BaseTool
+        if isinstance(obj, BaseTool):
+            from ._context import make_runtime_handler
+            return make_runtime_handler(obj), f"{module}:{code}"
+        # 自定义源码模块：普通 (args, ctx) -> str 函数直接使用
+        if not callable(obj):
+            raise ValueError(f"模块 {module} 的 {code} 不可调用")
+        return obj, f"{module}:{code}"
+    # 内联 Python 代码
+    return build_handler(code, module), (module or "db")

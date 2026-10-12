@@ -7,18 +7,12 @@ from fastapi.responses import JSONResponse
 from core.responses import json, message
 
 
-def page(result: dict, page: int, page_size: int) -> JSONResponse:
+def page(result: dict) -> JSONResponse:
     """分页用户列表（脱敏：移除 password / id）。"""
-    items = result["items"]
-    for u in items:
+    for u in result["items"]:
         u.pop("password", None)
         u.pop("id", None)
-    return json({
-        "total": result["total"],
-        "page": page,
-        "page_size": page_size,
-        "items": items,
-    })
+    return json(result)
 
 
 def created(username: str) -> JSONResponse:

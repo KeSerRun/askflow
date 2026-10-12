@@ -3,7 +3,7 @@
     :show="isOpen"
     preset="card"
     :bordered="false"
-    title="知识库文档"
+    title="会话附件"
     style="max-width: 600px; width: 94vw"
     :mask-closable="true"
     :segmented="{ content: false, footer: 'soft' }"
@@ -11,7 +11,7 @@
   >
     <template #header-extra>
       <n-space align="center" :size="12">
-        <n-text depth="3">{{ filteredDocs.length }} 个文档</n-text>
+        <n-text depth="3">{{ filteredDocs.length }} 个附件</n-text>
         <n-button size="small" quaternary circle @click="$emit('refresh')" title="刷新">
           <template #icon>
             <n-icon :component="RefreshOutline" />
@@ -25,7 +25,7 @@
       <div class="search-row">
         <n-input
           v-model:value="searchQuery"
-          placeholder="搜索文档…"
+          placeholder="搜索附件…"
           clearable
           round
           size="small"
@@ -51,7 +51,7 @@
 
       <n-empty
         v-if="filteredDocs.length === 0"
-        :description="documents.length === 0 ? '还没有上传任何文档' : '没有匹配的文档'"
+        :description="documents.length === 0 ? '还没有上传任何附件' : '没有匹配的附件'"
         style="margin: 24px 0"
       >
         <template #extra>
@@ -77,6 +77,15 @@
                 style="color: var(--color-primary); margin-left: 4px"
               />
               <span class="doc-name">{{ docName }}</span>
+              <n-tag
+                v-if="parseInfo(docName)"
+                :type="parseInfo(docName).tag"
+                :title="parseInfo(docName).error || ''"
+                size="small"
+                :bordered="false"
+              >
+                {{ parseInfo(docName).text }}
+              </n-tag>
             </label>
           </div>
         </n-checkbox-group>
@@ -89,7 +98,10 @@
           :page-count="totalPages"
           :page-size="pageSize"
           size="small"
+          show-size-picker
+          :page-sizes="pageSizes"
           @update:page="currentPage = $event"
+          @update:page-size="onSizeChange"
         />
       </div>
     </div>
@@ -117,7 +129,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch } from 'vue'
 import {
   NModal,
   NCheckbox,
@@ -131,35 +143,51 @@ import {
   NText,
   NPagination,
   NProgress,
+  NTag,
 } from 'naive-ui'
 import { DocumentTextOutline, TrashOutline, SearchOutline, RefreshOutline } from '@vicons/ionicons5'
-import axios from '@/http/interceptor'
 
 const props = defineProps({
   isOpen: { type: Boolean, default: false },
   documents: { type: Array, required: true },
+  storage: { type: Object, default: () => ({ current_mb: 0, max_mb: 0, limit_enabled: false }) },
   isDeleting: { type: Boolean, default: false },
+  parseStatus: { type: Object, default: () => ({}) },
 })
 
 const emit = defineEmits(['close', 'delete', 'open', 'refresh'])
 
+// 附件 MinerU 解析状态（由父组件轮询传入：{name: {status, error}}）
+const _PARSE_UI = {
+  pending: { text: '待解析', tag: 'info' },
+  parsing: { text: '解析中', tag: 'warning' },
+  success: { text: '已解析', tag: 'success' },
+  failed: { text: '解析失败', tag: 'error' },
+  skipped: { text: '未解析', tag: 'default' },
+}
+const parseInfo = (name) => {
+  const s = props.parseStatus?.[name]
+  if (!s) return null
+  const ui = _PARSE_UI[s.status]
+  return ui ? { ...ui, error: s.error || '' } : null
+}
+
 const selected = ref([])
 const searchQuery = ref('')
 const currentPage = ref(1)
-const pageSize = 10
+const pageSize = ref(10)
+const pageSizes = [10, 20, 50, 100]
 
-// 存储用量
-const storageCurrent = ref(0)
-const storageMax = ref(0)
-const storageLimitEnabled = ref(false)
+// 存储用量（由父组件传入：当前会话暂存用量）
+const storageLimitEnabled = computed(() => !!props.storage?.limit_enabled)
 
 const storagePercent = computed(() => {
-  if (!storageMax.value) return 0
-  return Math.min(100, Math.round((storageCurrent.value / storageMax.value) * 100))
+  if (!props.storage?.max_mb) return 0
+  return Math.min(100, Math.round((props.storage.current_mb / props.storage.max_mb) * 100))
 })
 
 const storageText = computed(() => {
-  return `${storageCurrent.value.toFixed(1)}MB / ${storageMax.value}MB`
+  return `${(props.storage?.current_mb || 0).toFixed(1)}MB / ${props.storage?.max_mb || 0}MB`
 })
 
 const storageBarColor = computed(() => {
@@ -167,21 +195,6 @@ const storageBarColor = computed(() => {
   if (storagePercent.value >= 70) return 'var(--color-warning-alt)'
   return 'var(--color-primary)'
 })
-
-async function fetchStorageInfo() {
-  try {
-    const res = await axios.get('/api/documents/storage/info')
-    if (res.data.limit_enabled) {
-      storageCurrent.value = res.data.current_mb
-      storageMax.value = res.data.max_mb
-      storageLimitEnabled.value = true
-    } else {
-      storageLimitEnabled.value = false
-    }
-  } catch {
-    storageLimitEnabled.value = false
-  }
-}
 
 // 搜索过滤
 const filteredDocs = computed(() => {
@@ -191,19 +204,21 @@ const filteredDocs = computed(() => {
 })
 
 // 分页
-const totalPages = computed(() => Math.ceil(filteredDocs.value.length / pageSize) || 0)
+const totalPages = computed(() => Math.ceil(filteredDocs.value.length / pageSize.value) || 0)
 
 const pagedDocs = computed(() => {
-  const start = (currentPage.value - 1) * pageSize
-  return filteredDocs.value.slice(start, start + pageSize)
+  const start = (currentPage.value - 1) * pageSize.value
+  return filteredDocs.value.slice(start, start + pageSize.value)
 })
 
-// 搜索或文档变化时回到第一页，并刷新存储容量
+function onSizeChange(size) {
+  pageSize.value = size
+  currentPage.value = 1
+}
+
+// 搜索或文档变化时回到第一页
 watch([searchQuery, () => props.documents], () => {
   currentPage.value = 1
-  if (props.isOpen) {
-    fetchStorageInfo()
-  }
 })
 
 // 弹窗打开时重置
@@ -214,7 +229,6 @@ watch(
       selected.value = []
       searchQuery.value = ''
       currentPage.value = 1
-      fetchStorageInfo()
     }
   }
 )

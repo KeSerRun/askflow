@@ -7,9 +7,10 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from core.errors import Conflict, InvalidInput, NotFound
+from core.app_errors import Conflict, InvalidInput, NotFound
+from core.pagination import paginate_query
 from infra.adapters.storage import row_to_dict
-from infra.logger import logger
+from infra.util.logger import logger
 
 from .entity import User
 
@@ -26,8 +27,10 @@ class UserService:
         self._repo = repo
 
     def insert_user(self, username: str, password: str, role: str = "user") -> bool:
-        """创建用户（用户名规范化为小写）；已存在返回 False。"""
-        name = username.lower()
+        """创建用户（保留输入大小写，登录大小写不敏感）；已存在返回 False。"""
+        name = username.strip()
+        if not name:
+            return False
         if self._repo.find("users", {"username": name}):
             return False
         self._repo.insert("users", User(
@@ -60,30 +63,37 @@ class UserService:
         return created
 
     def delete_user(self, username: str) -> bool:
-        return self._repo.delete_where("users", {"username": username.lower()}) > 0
+        return self._repo.delete_where("users", {"username": username}) > 0
 
     def check_user_credentials(self, username: str, password: str) -> dict | None:
-        """校验凭据；成功返回 ``{"username", "role"}``，失败返回 None。"""
-        rows = self._repo.find("users", {"username": username.lower(), "password": password})
+        """校验凭据（用户名**大小写敏感**）；成功返回 ``{"user_id","username","role"}``，失败返回 None。"""
+        rows = self._repo.find("users", {"username": username, "password": password})
         if not rows:
             return None
-        return {"username": rows[0].username, "role": rows[0].role}
+        u = rows[0]
+        return {"user_id": u.id, "username": u.username, "role": u.role}
+
+    def get_id(self, username: str) -> int | None:
+        """按用户名取 user_id（大小写敏感），未找到返回 None。"""
+        rows = self._repo.find("users", {"username": username})
+        return rows[0].id if rows else None
 
     def get_all_users(self, page: int = 1, page_size: int = 20) -> dict:
-        """分页返回用户（``{"items": [...], "total": N}``）。"""
-        page = max(1, page)
-        total = self._repo.count("users")
-        rows = self._repo.find("users", order_by="id", offset=(page - 1) * page_size, limit=page_size)
-        return {"items": [row_to_dict(u) for u in rows], "total": total}
+        """分页返回用户（user_id = users.id 主键），下推仓储层。"""
+        return paginate_query(
+            self._repo, "users", order_by="id",
+            page=page, page_size=page_size, key="items",
+            serialize=lambda r: {**row_to_dict(r), "user_id": r.id},
+        )
 
     def update_user_role(self, username: str, new_role: str) -> bool:
         return self._repo.update_where(
-            "users", {"username": username.lower()}, {"role": new_role}
+            "users", {"username": username}, {"role": new_role}
         ) > 0
 
     def update_user_password(self, username: str, new_password: str) -> bool:
         return self._repo.update_where(
-            "users", {"username": username.lower()}, {"password": new_password}
+            "users", {"username": username}, {"password": new_password}
         ) > 0
 
     # ── 管理端用例（含业务规则，抛 AppError） ──
@@ -94,7 +104,7 @@ class UserService:
         Raises:
             AppError 409: 用户名已存在。
         """
-        if self._repo.find("users", {"username": username.lower()}):
+        if self._repo.find("users", {"username": username}):
             raise Conflict("用户名已存在")
         self.insert_user(username, password, role)
 
@@ -107,7 +117,7 @@ class UserService:
         """
         if username == current_user:
             raise InvalidInput("不能删除当前登录账户")
-        if self._repo.delete_where("users", {"username": username.lower()}) == 0:
+        if self._repo.delete_where("users", {"username": username}) == 0:
             raise NotFound(f"用户 '{username}' 不存在")
 
     def change_role(self, username: str, role: str) -> None:
@@ -116,7 +126,7 @@ class UserService:
         Raises:
             AppError 404: 用户不存在。
         """
-        if self._repo.update_where("users", {"username": username.lower()}, {"role": role}) == 0:
+        if self._repo.update_where("users", {"username": username}, {"role": role}) == 0:
             raise NotFound(f"用户 '{username}' 不存在")
 
     def reset_password(self, username: str, password: str) -> None:
@@ -125,5 +135,5 @@ class UserService:
         Raises:
             AppError 404: 用户不存在。
         """
-        if self._repo.update_where("users", {"username": username.lower()}, {"password": password}) == 0:
+        if self._repo.update_where("users", {"username": username}, {"password": password}) == 0:
             raise NotFound(f"用户 '{username}' 不存在")

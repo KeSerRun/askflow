@@ -1,7 +1,7 @@
 """core.http_errors —— 表示层统一异常映射（唯一出现 HTTP 状态码的地方）。
 
-把 ``core.errors`` 的语义异常映射为 HTTP 状态码；并处理请求校验错误与未捕获异常。
-业务服务层只抛 ``core.errors`` 的语义异常、不感知 HTTP；FastAPI handler 与状态码只在本模块。
+把 ``core.app_errors`` 的语义异常映射为 HTTP 状态码；并处理请求校验错误与未捕获异常。
+业务服务层只抛 ``core.app_errors`` 的语义异常、不感知 HTTP；FastAPI handler 与状态码只在本模块。
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from core.errors import (
+from core.app_errors import (
     AppError,
     Conflict,
     InvalidCredentials,
@@ -22,7 +22,7 @@ from core.errors import (
     Unauthorized,
     UsernameAlreadyExists,
 )
-from infra.logger import logger
+from infra.util.logger import logger
 
 # 语义异常 → HTTP 状态码（dict 有序：从上到下匹配、先中先返；
 # 子类如 SessionAccessDenied(继承 PermissionDenied) 靠本顺序命中父类映射）

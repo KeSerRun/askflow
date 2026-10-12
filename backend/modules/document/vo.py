@@ -1,55 +1,56 @@
-"""modules.documents —— 文档响应组装（含文件/图片下载与 SSE）。"""
+"""modules.documents —— 文档响应组装（会话附件 + 文件/图片下载，均从对象存储取字节）。"""
 
 from __future__ import annotations
 
 import mimetypes
-import os
 
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi import HTTPException
+from fastapi.responses import JSONResponse, Response
 
 from core.responses import json, message
 
 
-def added() -> JSONResponse:
-    return message("Documents added successfully")
+def session_files(files: list, usage: dict) -> JSONResponse:
+    """会话附件列表 / 上传结果（含用量）。"""
+    return json({"files": files, "usage": usage})
 
 
-def cleared() -> JSONResponse:
-    return message("User documents cleared successfully")
+def session_files_parse(data: dict) -> JSONResponse:
+    """会话附件 MinerU 解析状态（files 为 {文件名: {status, error}}）。"""
+    return json({"files": data.get("files", {}), "usage": data.get("usage", {})})
 
 
-def chosen_cleared() -> JSONResponse:
-    return message("Selected documents cleared successfully")
+def session_file_deleted(filename: str) -> JSONResponse:
+    return message(f"附件 {filename} 已删除")
 
 
-def upload_result(files: list) -> JSONResponse:
-    return json({"files": files})
+def session_files_cleared() -> JSONResponse:
+    return message("会话附件已清空")
 
 
-def list_(documents) -> JSONResponse:
-    return json({"documents": documents})
-
-
-def storage_info(payload: dict) -> JSONResponse:
-    return json(payload)
-
-
-def inline_file(path: str, media_type: str, filename: str) -> FileResponse:
-    """以 inline 方式返回文件（PDF/图片可在浏览器直接打开）。"""
-    return FileResponse(
-        path=path,
+def inline_bytes(data: bytes, filename: str) -> Response:
+    """以 inline 方式返回字节（PDF/图片可在浏览器直接打开）。"""
+    media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    return Response(
+        content=data,
         media_type=media_type,
-        filename=filename,
-        content_disposition_type="inline",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
     )
 
 
-def inline_path(path: str) -> FileResponse:
-    """按扩展名推断媒体类型后以 inline 返回。"""
-    media_type = mimetypes.guess_type(path)[0] or "application/octet-stream"
-    return inline_file(path, media_type, os.path.basename(path))
+def mineru_image(document_service, doc_stem: str, img_name: str) -> Response:
+    """按 doc_stem 从对象存储返回 MinerU 图片；未找到抛 404。"""
+    found = document_service.read_image(doc_stem, img_name)
+    if found is None:
+        raise HTTPException(status_code=404, detail="image not found")
+    data, media_type, _name = found
+    return Response(content=data, media_type=media_type)
 
 
-def sse_upload(generator) -> StreamingResponse:
-    """上传处理进度的 SSE 流响应。"""
-    return StreamingResponse(generator, media_type="text/event-stream")
+def inline_bytes_global(document_service, img_name: str) -> Response | None:
+    """全局从对象存储返回图片；未找到返回 None（由调用方抛 404）。"""
+    found = document_service.read_image_global(img_name)
+    if found is None:
+        return None
+    data, media_type, _name = found
+    return Response(content=data, media_type=media_type)

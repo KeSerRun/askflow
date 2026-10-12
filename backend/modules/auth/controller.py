@@ -8,7 +8,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from core.deps import auth_service, current_user
+from core.deps import auth_service, require_auth
 from .dto import Credentials
 from . import vo as views
 
@@ -16,21 +16,21 @@ router = APIRouter(prefix="/api", tags=["auth"])
 
 
 @router.post("/register")
-async def register(body: Credentials):
+def register(body: Credentials):
     """处理用户注册。"""
     auth_service.register(body.username, body.password)
     return views.register_success()
 
 
 @router.post("/login")
-async def login(request: Request, body: Credentials):
+def login(request: Request, body: Credentials):
     """登录：返回 access_token，并用 Set-Cookie 下发 refresh_token。"""
     tokens = auth_service.login(body.username, body.password)
     return views.login_success(request, tokens)
 
 
 @router.post("/refresh")
-async def refresh(request: Request):
+def refresh(request: Request):
     """用 httpOnly cookie 里的 refresh_token 换新令牌对（轮换）。"""
     refresh_token = request.cookies.get(views.COOKIE_NAME)
     if not refresh_token:
@@ -40,7 +40,7 @@ async def refresh(request: Request):
 
 
 @router.post("/logout")
-async def logout(request: Request):
+def logout(request: Request):
     """登出：吊销该用户全部 refresh 令牌并清除 cookie。"""
     refresh_token = request.cookies.get(views.COOKIE_NAME)
     if refresh_token:
@@ -49,6 +49,6 @@ async def logout(request: Request):
 
 
 @router.get("/auth/me")
-async def me(user: dict = Depends(current_user)):
+def me(user: dict = Depends(require_auth)):
     """返回当前登录用户（凭 Authorization 头 / 可选 ?token=）。"""
     return views.me(user)

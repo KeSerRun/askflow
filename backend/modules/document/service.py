@@ -1,26 +1,34 @@
-"""modules.document.service —— 文档用例（保存 / 入库 / 清除 / 列出）。
+"""modules.document.service —— 文档用例（会话附件暂存 / 系统文档入库）+ 目录配额。
 
-对齐**真实管线**：
-  1. 原始文件落盘到 ``{data_dir}/uploads/{user}/{filename}``
-  2. 经 ``VectorStore.store_documents_from_dir`` 解析入库（解析产物 chunk_out/
-     图片由解析器写到源文件同级目录，供下载/图片接口与完整性检查使用）
-  3. 按来源/分区删除向量，并清理原文件与 chunk 产物
+- ``DocumentService``：
+  - **会话附件暂存**：对话页上传的附件按 ``sessions/{user}/{session_id}/`` 隔离存放，
+    只暂存、**不解析不入向量库**（解析产物为 md 供会话内工具检索）；受 ``max_session_mb`` 限制；
+  - **系统文档入库**：``upload()`` 保存原始文件（MinIO）+ MinerU 解析 + 向量化（管理端使用，进 ``__system__``）；
+  - **图片读取**：供答案中的图片直链（``read_image`` / ``read_image_global``）。
 
-依赖：仅具体的 vector / history 适配器；``data_dir`` 由组合根注入。
+文件存储统一走 ``FileStore``（**仅对象存储，不读写本地 data 目录**）：
+  1. 原始文件写入对象 ``uploads/{partition}/{filename}``；
+  2. ``VectorStore.store_documents_from_dir`` 从临时物化文件解析入库，并把 MinerU 产物
+     （chunk_out/）上传回对象 ``uploads/{partition}/chunk_out/{stem}/``，随后清理临时物化文件；
+  3. 按来源删除向量，并清理对象产物。
+
+依赖：仅具体的 vector / 对象存储适配器；``object_store`` 由组合根注入。
 """
 
 from __future__ import annotations
 
-import glob
+import mimetypes
 import os
 import re
-import shutil
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
-from infra.logger import logger
-
-from core.errors import InvalidInput, NotFound, PermissionDenied
+from core.app_errors import InvalidInput, NotFound, PermissionDenied, QuotaExceeded
+from infra.adapters.pdf.document_loader import MINERU_EXTENSIONS
+from infra.adapters.pdf.mineru_impl import MinerULoader
+from .backend import FileStore, match_img_key
 from .entity import UploadResult
 
 _ILLEGAL_CHARS = re.compile(r'[\x00-\x1f\\/:*?"<>|]')
@@ -35,119 +43,94 @@ _MAX_FILENAME_BYTES = 200
 class DocumentService:
     """文档处理用例。"""
 
-    def __init__(self, vector: object, history: object, storage: object, *,
-                 data_dir: str, mineru_max_concurrency: int = 3):
+    def __init__(self, vector: object, *,
+                 object_store: Optional[object] = None,
+                 mineru_max_concurrency: int = 3, max_session_mb: int = 0):
         """初始化。
 
         Args:
             vector: 向量库适配器（提供 store_documents_from_dir / delete_by_* 等）。
-            history: 历史服务（记录上传/删除事件）。
-            storage: 存储配额服务（上传前校验，超限抛 AppError 413）。
-            data_dir: 数据根目录（上传文件与 chunk 产物的落盘位置）。
-            mineru_max_concurrency: 上传向量化的解析并发上限。
+            object_store: 对象存储适配器（MinIO；None 表示不可用，文件读写被禁用）。
+            mineru_max_concurrency: 系统文档向量化的解析并发上限。
+            max_session_mb: 每会话附件暂存总大小上限（MB）；<=0 表示不限制。
         """
         self._vector = vector
-        self._history = history
-        self._storage = storage
-        self._data_dir = data_dir
+        self._files = FileStore(object_store)
         self._workers = max(1, int(mineru_max_concurrency or 1))
+        self._max_session_mb = max(0, int(max_session_mb or 0))
+        # 会话附件 MinerU 解析状态（不入向量库）：{user|session: {filename: {"status", "error"}}}
+        self._parse_states: dict[str, dict[str, dict]] = {}
+        self._parse_lock = threading.Lock()
 
-    # ── 路径 ──
+    # ── 键 ──
 
-    def upload_dir(self, user: str) -> str:
-        """返回用户的暂存目录绝对路径。"""
-        return os.path.join(self._data_dir, "uploads", user.lower())
+    @staticmethod
+    def _session_user(user: str) -> str:
+        """会话对象的用户键（与历史目录一致性约定：统一小写）。"""
+        return str(user).lower()
 
-    def _file_path(self, user: str, filename: str) -> str:
-        return os.path.join(self.upload_dir(user), os.path.basename(filename))
+    def _session_prefix(self, user: str, session_id: str) -> str:
+        return f"sessions/{self._session_user(user)}/{os.path.basename(session_id)}"
 
-    # ── 保存 ──
+    def _upload_key(self, user: str, filename: str) -> str:
+        return f"uploads/{str(user)}/{os.path.basename(filename)}"
+
+    # ── 保存（系统文档） ──
 
     def save_file(self, user: str, filename: str, data: bytes) -> dict:
-        """保存单个原始文件（不解析）。
+        """保存单个原始文件（不解析，写入对象存储）。
 
         Returns:
-            dict: ``{"filename": str, "size": int}``。
+            dict: ``{"filename", "size", "path"}``（path 为对象键）。
         """
         name = os.path.basename(filename)
-        save_path = self._file_path(user, name)
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        with open(save_path, "wb") as f:
-            f.write(data)
-        return {"filename": name, "size": len(data), "path": save_path}
+        rel = self._upload_key(user, name)
+        self._files.put(rel, data)
+        return {"filename": name, "size": len(data), "path": rel}
 
-    def save_uploads(self, user: str, files: list[tuple[str, bytes, str]], *,
-                     session_id: Optional[str] = None, require_pdf: bool = True) -> list[dict]:
-        """批量保存原始文件（含文件名清洗/PDF 校验），并记录一次上传事件。
-
-        Args:
-            user: 分区标识。
-            files: ``[(原始文件名, data, content_type), ...]``。
-            session_id: 关联会话（记录事件用）。
-            require_pdf: 是否强制 PDF。
-
-        Returns:
-            list[dict]: 每个文件 ``{"filename", "size", "content_type"}``。
-        """
-        results = []
-        for raw_name, data, content_type in files:
-            name = self.sanitize_filename(raw_name)
-            if require_pdf:
-                self.ensure_pdf(name)
-            info = self.save_file(user, name, data)
-            results.append({"filename": name, "size": info["size"], "content_type": content_type})
-        self.record_upload(session_id, [r["filename"] for r in results])
-        return results
-
-    def record_upload(self, session_id: Optional[str], filenames: list) -> None:
-        """记录一次上传事件（可选）。"""
-        if session_id and filenames:
-            self._history.insert_session_event(session_id, "upload", list(filenames))
-
-    # ── 清理 ──
+    # ── 清理（系统文档） ──
 
     def purge(self, user: str, sources: Optional[list] = None) -> None:
         """清理原文件与其 chunk 产物。
 
-        - ``sources=None``: 清空整个用户目录（含全部文件与 chunk_out/）
+        - ``sources=None``: 清空整个分区（含全部文件与 chunk_out/）
         - ``sources=[...]``: 仅清指定文件及其 ``chunk_out/{stem}/``
         """
-        upload_dir = self.upload_dir(user)
-        if not os.path.isdir(upload_dir):
-            return
-
         if sources is None:
-            shutil.rmtree(upload_dir, ignore_errors=True)
+            self._files.delete_prefix(f"uploads/{str(user)}")
             return
 
-        chunk_root = os.path.join(upload_dir, "chunk_out")
         for src in sources:
             name = os.path.basename(src)
-            file_path = os.path.join(upload_dir, name)
-            if os.path.isfile(file_path):
-                os.remove(file_path)
+            self._files.delete(self._upload_key(user, name))
+            stem = os.path.splitext(name)[0]
+            self._files.delete_prefix(f"uploads/{str(user)}/chunk_out/{stem}")
 
-            sub = os.path.join(chunk_root, os.path.splitext(name)[0])
-            if os.path.isdir(sub):
-                shutil.rmtree(sub, ignore_errors=True)
-
-    # ── 入库 ──
+    # ── 入库（系统文档） ──
 
     def forget_source(self, user: str, filename: str) -> None:
         """删除某来源的向量（不动文件）。"""
-        self._vector.delete_by_sources([os.path.basename(filename)], partition=user.lower())
+        self._vector.delete_by_sources([os.path.basename(filename)])
 
     def index_file(self, user: str, filename: str) -> None:
-        """解析并入库已落盘的单个文件。"""
-        self._vector.store_documents_from_dir(self._file_path(user, filename), partition=user.lower())
+        """解析并入库单个文件（只进系统分区），chunk 产物上传回对象存储。
 
-    def index_path(self, user: str, path: str) -> None:
-        """解析并入库任意本地路径（目录或文件，路径安全由调用方校验）。"""
-        self._vector.store_documents_from_dir(path, partition=user.lower())
+        把原始文件物化到系统临时目录 → 本地解析/向量化 →
+        产物上传回对象存储 → 清理临时物化文件。
+        """
+        name = os.path.basename(filename)
+        rel = self._upload_key(user, name)
+        proxy = self._files.local_materialize(rel)
+        if proxy is None:
+            raise NotFound(f"原文件未找到: {name}")
 
-    def add_documents(self, user: str, documents: list) -> None:
-        """把已解析的文档分块入库。"""
-        self._vector.add_documents(documents, partition=user.lower())
+        self._vector.store_documents_from_dir(proxy)
+
+        stem = Path(proxy).stem
+        co = Path(proxy).parent / "chunk_out" / stem
+        if co.is_dir():
+            self._files.upload_subtree(str(co), f"uploads/{str(user)}/chunk_out/{stem}")
+        self._files.cleanup_materialized(rel)
 
     def upload(self, user: str, filename: str, data: bytes) -> UploadResult:
         """保存 + 覆盖入库（先删同名向量与旧产物）。"""
@@ -158,25 +141,230 @@ class DocumentService:
         self.index_file(user, name)
         return UploadResult(filename=name, sources=[name])
 
-    # ── 列出 / 清除 ──
+    # ── 会话附件暂存（对话页：只暂存，不解析/不入库） ──
 
-    def list_documents(self, user: str) -> list:
-        """返回该用户已入库文档来源列表。"""
-        return self._vector.get_sources_by_partition(user.lower())
+    def _session_size_bytes(self, user: str, session_id: str) -> int:
+        return self._files.size_bytes(self._session_prefix(user, session_id))
 
-    def clear_all(self, user: str, *, session_id: Optional[str] = None) -> None:
-        """清除用户全部文档（向量 + 文件 + chunk 产物）。"""
-        self._vector.delete_by_partition(partition=user.lower())
-        self.purge(user, None)
-        if session_id:
-            self._history.insert_session_event(session_id, "delete_all", [])
+    def session_usage(self, user: str, session_id: str) -> dict:
+        """会话暂存使用情况（current_mb / max_mb / limit_enabled / ok）。"""
+        current_mb = round(self._session_size_bytes(user, session_id) / (1024 * 1024), 2)
+        return {
+            "current_mb": current_mb,
+            "max_mb": self._max_session_mb,
+            "limit_enabled": self._max_session_mb > 0,
+            "ok": self._max_session_mb <= 0 or current_mb <= self._max_session_mb,
+        }
 
-    def clear_sources(self, user: str, sources: list, *, session_id: Optional[str] = None) -> None:
-        """清除指定来源的文档（向量 + 文件 + chunk 产物）。"""
-        self._vector.delete_by_sources(list(sources), partition=user.lower())
-        self.purge(user, sources)
-        if session_id:
-            self._history.insert_session_event(session_id, "delete", list(sources))
+    def save_session_files(self, user: str, session_id: str, files: list) -> list[dict]:
+        """把对话页附件暂存到会话目录（只暂存，不做解析/向量化）。
+
+        Args:
+            user: 用户 ID（分区归属）。
+            session_id: 会话 ID（目录隔离）。
+            files: ``[(原始文件名, content_bytes, content_type), ...]``。
+
+        Returns:
+            list[dict]: 每个文件 ``{"filename", "size", "content_type"}``。
+
+        Raises:
+            AppError 413: 会话附件总大小超过上限。
+            AppError 400: 文件名为空/非法。
+        """
+        prefix = self._session_prefix(user, session_id)
+        incoming = sum(len(content) for _, content, _ in files)
+        if self._max_session_mb > 0:
+            current = self._session_size_bytes(user, session_id)
+            if (current + incoming) > self._max_session_mb * 1024 * 1024:
+                current_mb = round(current / (1024 * 1024), 2)
+                raise QuotaExceeded(
+                    f"会话附件空间不足：已用 {current_mb}MB / 上限 {self._max_session_mb}MB，"
+                    "请清理后再上传"
+                )
+
+        results = []
+        for raw_name, content, content_type in files:
+            name = self.sanitize_filename(raw_name)
+            self._files.put(f"{prefix}/{name}", content, content_type=content_type or "")
+            results.append({"filename": name, "size": len(content), "content_type": content_type})
+        return results
+
+    def list_session_files(self, user: str, session_id: str) -> list[dict]:
+        """列出会话暂存文件（``name`` / ``size``，按名排序；不含 chunk_out 产物）。"""
+        return self._files.list(self._session_prefix(user, session_id))
+
+    def delete_session_file(self, user: str, session_id: str, filename: str) -> None:
+        """删除会话暂存下的单个文件（连同其解析产物与状态；不存在则忽略）。"""
+        prefix = self._session_prefix(user, session_id)
+        name = os.path.basename(filename)
+        self._files.delete(f"{prefix}/{name}")
+        stem = os.path.splitext(name)[0]
+        self._files.delete_prefix(f"{prefix}/chunk_out/{stem}")
+        key = self._parse_key(user, session_id)
+        with self._parse_lock:
+            self._parse_states.get(key, {}).pop(name, None)
+
+    def clear_session_files(self, user: str, session_id: str) -> None:
+        """清空会话暂存（含解析产物与解析状态）。"""
+        self._files.delete_prefix(self._session_prefix(user, session_id))
+        key = self._parse_key(user, session_id)
+        with self._parse_lock:
+            self._parse_states.pop(key, None)
+
+    def read_session_file(self, user: str, session_id: str, filename: str) -> tuple[bytes, str]:
+        """读取会话暂存原始文件字节（路径穿越防护：仅接受文件名）。
+
+        Returns:
+            tuple: ``(bytes, filename)``。
+
+        Raises:
+            AppError 403: 路径穿越。
+            AppError 404: 文件不存在。
+        """
+        name = os.path.basename(filename)
+        if name in ("", ".", ".."):
+            raise PermissionDenied("forbidden")
+        prefix = self._session_prefix(user, session_id)
+        data = self._files.get_bytes(f"{prefix}/{name}")
+        if data is None:
+            raise NotFound("file not found")
+        return data, name
+
+    # ── 会话附件 MinerU 解析（对话页上传 → 解析为 txt，不入向量库） ──
+
+    def _parse_key(self, user: str, session_id: str) -> str:
+        return f"{self._session_user(user)}|{os.path.basename(session_id)}"
+
+    def schedule_session_parse(self, user: str, session_id: str, filenames: list[str]) -> None:
+        """为会话附件启动后台 MinerU 解析（产物上传回 ``会话目录/chunk_out/{stem}/``）。
+
+        仅处理 MinerU 支持的格式；其余标记 ``skipped``（仅暂存，不可检索）。
+        """
+        key = self._parse_key(user, session_id)
+        with self._parse_lock:
+            states = self._parse_states.setdefault(key, {})
+
+        def _one(fname: str) -> None:
+            with self._parse_lock:
+                states[fname] = {"status": "parsing", "error": ""}
+            try:
+                name = os.path.basename(fname)
+                prefix = self._session_prefix(user, session_id)
+                rel = f"{prefix}/{name}"
+                proxy = self._files.local_materialize(rel)
+                if proxy is None:
+                    raise FileNotFoundError(fname)
+                # 产物写入 proxy.parent/chunk_out/{stem}/
+                MinerULoader(proxy).load()
+                stem = Path(proxy).stem
+                co = Path(proxy).parent / "chunk_out" / stem
+                if co.is_dir():
+                    self._files.upload_subtree(str(co), f"{prefix}/chunk_out/{stem}")
+                self._files.cleanup_materialized(rel)
+                with self._parse_lock:
+                    states[fname] = {"status": "success", "error": ""}
+            except Exception as e:  # noqa: BLE001
+                with self._parse_lock:
+                    states[fname] = {"status": "failed", "error": str(e)[:300]}
+
+        def _text_doc(fname: str) -> None:
+            """md/markdown 直接作为文本文档：原样拷贝为 chunk_out/{stem}/{stem}.txt 供会话工具读取。"""
+            with self._parse_lock:
+                states[fname] = {"status": "parsing", "error": ""}
+            try:
+                name = os.path.basename(fname)
+                stem = Path(name).stem
+                prefix = self._session_prefix(user, session_id)
+                data = self._files.get_bytes(f"{prefix}/{name}")
+                if not data:
+                    raise FileNotFoundError(fname)
+                self._files.put(f"{prefix}/chunk_out/{stem}/{stem}.txt", data)
+                with self._parse_lock:
+                    states[fname] = {"status": "success", "error": ""}
+            except Exception as e:  # noqa: BLE001
+                with self._parse_lock:
+                    states[fname] = {"status": "failed", "error": str(e)[:300]}
+
+        jobs: list[str] = []
+        for fname in filenames:
+            ext = os.path.splitext(fname)[1].lstrip(".").lower()
+            if not fname:
+                continue
+            if ext in ("md", "markdown"):
+                # 纯文本文档：不经 MinerU，直接拷贝为会话 txt
+                _text_doc(fname)
+                continue
+            if ext not in MINERU_EXTENSIONS:
+                with self._parse_lock:
+                    states[fname] = {"status": "skipped", "error": ""}
+                continue
+            with self._parse_lock:
+                states[fname] = {"status": "pending", "error": ""}
+            jobs.append(fname)
+
+        if jobs:
+            with ThreadPoolExecutor(max_workers=self._workers) as pool:
+                list(pool.map(_one, jobs))
+
+    def session_parse_status(self, user: str, session_id: str) -> dict:
+        """返回当前会话各附件的解析状态与用量（供对话页展示）。"""
+        key = self._parse_key(user, session_id)
+        with self._parse_lock:
+            states = dict(self._parse_states.get(key, {}))
+        return {"files": states, "usage": self.session_usage(user, session_id)}
+
+    # ── 图片读取（供答案中的图片直链） ──
+
+    @staticmethod
+    def _media_of(name: str) -> str:
+        return mimetypes.guess_type(name)[0] or "application/octet-stream"
+
+    def read_image(self, doc_stem: str, img_name: str) -> Optional[tuple[bytes, str, str]]:
+        """按 doc_stem 定位 MinerU 解析图片并读取字节。
+
+        Returns:
+            tuple ``(bytes, media_type, filename)`` 或 None。
+        """
+        img_name = img_name.rstrip("/")
+        stems = {Path(doc_stem).name, Path(doc_stem).stem}
+        for s in sorted(stems, key=len, reverse=True):
+            for item in self._files.list_all(f"uploads/__system__/chunk_out/{s}"):
+                if match_img_key(item["name"], img_name):
+                    data = self._files.get_bytes(item["name"])
+                    if data:
+                        return data, self._media_of(item["name"]), os.path.basename(item["name"])
+        return None
+
+    def read_query_image(self, key: str) -> Optional[tuple[bytes, str, str]]:
+        """读取对话页粘贴图片（``sessions/{user_id}/{session_id}/query_img/...``）。
+
+        Returns:
+            tuple ``(bytes, media_type, filename)`` 或 None。
+        """
+        key = str(key or "").lstrip("/")
+        if not key:
+            return None
+        name = os.path.basename(key)
+        data = self._files.get_bytes(key)
+        if not data:
+            return None
+        return data, self._media_of(name), name
+
+    def read_image_global(self, img_name: str) -> Optional[tuple[bytes, str, str]]:
+        """全局搜索 MinerU 图片（仅有图片 hash 时使用）。
+
+        Returns:
+            tuple ``(bytes, media_type, filename)`` 或 None。
+        """
+        img_name = img_name.rstrip("/")
+        if img_name.startswith("images/"):
+            img_name = img_name[7:]
+        for item in self._files.list_all("uploads/__system__/chunk_out"):
+            if match_img_key(item["name"], img_name):
+                data = self._files.get_bytes(item["name"])
+                if data:
+                    return data, self._media_of(item["name"]), os.path.basename(item["name"])
+        return None
 
     # ── 上传校验 ──
 
@@ -206,221 +394,59 @@ class DocumentService:
 
         return name
 
+
+class StorageService:
+    """目录配额策略：统计目录内文件总大小并判定上限。"""
+
     @staticmethod
-    def ensure_pdf(filename: str) -> None:
-        """断言文件为 PDF。
+    def dir_size_bytes(path: str) -> int:
+        """返回目录下（非递归）所有文件的字节总数；目录不存在返回 0。"""
+        total = 0
+        if os.path.isdir(path):
+            for entry in os.scandir(path):
+                if entry.is_file():
+                    total += entry.stat().st_size
+        return total
 
-        Raises:
-            AppError 400: 非 PDF。
-        """
-        if not filename.lower().endswith(".pdf"):
-            raise InvalidInput(f"仅支持 PDF 文件，收到: {filename}")
-
-    # ── 目录入库（含路径穿越防护） ──
-
-    def add_from_path(self, user: str, rel_path: str) -> None:
-        """把用户目录下的相对路径（目录/文件）解析入库。
-
-        Raises:
-            AppError 403: 路径穿越。
-            AppError 400: 路径不存在。
-        """
-        upload_root = os.path.realpath(self.upload_dir(user))
-        target = os.path.realpath(os.path.join(upload_root, rel_path))
-        if target != upload_root and not target.startswith(upload_root + os.sep):
-            raise PermissionDenied("forbidden")
-        if not os.path.exists(target):
-            raise NotFound("path not found")
-        self.index_path(user, target)
-
-    # ── 上传并向量化（进度事件流） ──
-
-    def iter_upload_progress(self, user: str, session_id: Optional[str], files_data: list,
-                             role: str = "user"):
-        """上传 + 向量化的进度事件流（yield dict 事件；SSE 格式化由表示层负责）。
+    def check(self, path: str, max_mb: int, additional_bytes: int = 0) -> tuple[bool, float, float]:
+        """检查目录是否超限。
 
         Args:
-            user: 分区标识。
-            session_id: 关联会话（记录事件）。
-            files_data: ``[(filename, content_bytes, content_type), ...]``。
-            role: 用户角色（配额校验用）。
+            path: 目标目录。
+            max_mb: 上限（MB）；``<=0`` 表示不限制。
+            additional_bytes: 额外待写入字节数（预检查）。
+
+        Returns:
+            tuple: ``(ok, current_mb, max_mb)``；未设限时 ``ok=True``。
+        """
+        if max_mb <= 0:
+            return True, 0, max_mb
+        total = self.dir_size_bytes(path) + additional_bytes
+        current_mb = total / (1024 * 1024)
+        return current_mb <= max_mb, round(current_mb, 2), max_mb
+
+    def enforce(self, path: str, max_mb: int, additional_bytes: int = 0, *,
+                label: str = "存储空间") -> None:
+        """断言目录未超配额。
 
         Raises:
             AppError 413: 存储空间不足。
         """
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        ok, current_mb, max_mb = self.check(path, max_mb, additional_bytes)
+        if not ok:
+            raise QuotaExceeded(
+                f"{label}不足：已用 {current_mb}MB / 上限 {max_mb}MB，请清理后再上传"
+            )
 
-        from infra.adapters.pdf.document_loader import process_documents_from_dir
-
-        self._enforce_quota(user, role, files_data)
-
-        prepared: list = []
-        for raw_name, content, ct in files_data:
-            name = self.sanitize_filename(raw_name)
-            self.ensure_pdf(name)
-            prepared.append((name, content, ct))
-
-        results: list = []
-        filenames: list = []
-        error_count = 0
-
-        saved: list[tuple[str, str]] = []
-        for idx, (filename, content, _ct) in enumerate(prepared):
-            yield {"status": "uploading", "text": "文档上传", "file": filename,
-                   "progress": f"{idx + 1}/{len(prepared)}"}
-            self.forget_source(user, filename)
-            self.purge(user, [filename])
-            info = self.save_file(user, filename, content)
-            saved.append((filename, info["path"]))
-
-        count = len(saved)
-        text = f"正在处理 {count} 个文件..." if count > 1 else "正在处理文件..."
-        yield {"status": "info", "text": text}
-
-        def _process_one(fn: str, sp: str):
-            events = [{"status": "parsing", "text": "文档解析", "file": fn}]
-            documents = process_documents_from_dir(sp)
-            if not documents:
-                events.append({"status": "error", "text": "解析失败", "file": fn})
-                return events, None
-            events.append({"status": "embedding", "text": "词嵌入", "file": fn})
-            try:
-                self.add_documents(user, documents)
-            except Exception as e:
-                logger.error(f"文档嵌入入库失败 ({fn}): {e}")
-                events.append({"status": "error", "text": f"嵌入失败: {e}", "file": fn})
-                return events, None
-            events.append({"status": "done", "text": "处理完成", "file": fn})
-            return events, fn
-
-        with ThreadPoolExecutor(max_workers=self._workers) as pool:
-            futures = {pool.submit(_process_one, fn, sp): fn for fn, sp in saved}
-            for future in as_completed(futures):
-                events, fn = future.result()
-                for e in events:
-                    yield e
-                if fn:
-                    results.append({"filename": fn})
-                    filenames.append(fn)
-                else:
-                    error_count += 1
-
-        self.record_upload(session_id, filenames)
-
-        if error_count > 0 and not results:
-            yield {"status": "done", "text": "所有文件均处理失败", "files": results}
-        elif error_count > 0:
-            yield {"status": "done", "text": f"入库完成，{error_count} 个文件失败", "files": results}
-        else:
-            yield {"status": "done", "text": "入库成功", "files": results}
-
-    def upload_and_index(self, user: str, files_data: list, *,
-                         role: str = "user", session_id: Optional[str] = None) -> list[dict]:
-        """上传并向量化一批文件（非流式）：先校验配额，再入库。
-
-        Args:
-            user: 分区标识。
-            files_data: ``[(原始文件名, content_bytes, content_type), ...]``。
-            role: 用户角色（配额校验用）。
-            session_id: 关联会话（记录一次上传事件）。
-
-        Raises:
-            AppError 413: 存储空间不足。
-        """
-        self._enforce_quota(user, role, files_data)
-        results = []
-        for raw_name, content, content_type in files_data:
-            name = self.sanitize_filename(raw_name)
-            self.ensure_pdf(name)
-            self.upload(user, name, content)
-            results.append({"filename": name, "size": len(content), "content_type": content_type})
-        self.record_upload(session_id, [r["filename"] for r in results])
-        return results
-
-    def _enforce_quota(self, user: str, role: str, files_data: list) -> None:
-        """按待写入字节数校验存储配额。
-
-        Raises:
-            AppError 413: 存储空间不足。
-        """
-        total_bytes = sum(len(content) for _, content, _ in files_data)
-        self._storage.enforce(user, role, total_bytes)
-
-    # ── 文件 / 图片解析（供下载与图片接口） ──
-
-    def resolve_user_file(self, user: str, filename: str) -> str:
-        """解析用户上传文件的真实路径（路径穿越/存在性校验）。
-
-        Raises:
-            AppError 403: 路径穿越。
-            AppError 404: 文件不存在。
-        """
-        upload_root = os.path.realpath(self.upload_dir(user))
-        target = os.path.realpath(os.path.join(upload_root, filename))
-        if target != upload_root and not target.startswith(upload_root + os.sep):
-            raise PermissionDenied("forbidden")
-        if not os.path.isfile(target):
-            raise NotFound("file not found")
-        return target
-
-    def find_image(self, doc_stem: str, img_name: str) -> Optional[str]:
-        """按 doc_stem 定位 MinerU 解析图片（逐级放宽匹配），返回绝对路径或 None。"""
-        data = Path(self._data_dir)
-        base_dir = data / "uploads" / "*" / "chunk_out" / doc_stem
-
-        candidates = glob.glob(str(base_dir / img_name))
-        if not candidates:
-            candidates = sorted(glob.glob(str(base_dir / f"{img_name}*")))
-
-        if not candidates and "." in doc_stem:
-            stem_clean = doc_stem.rsplit(".", 1)[0]
-            base_dir2 = data / "uploads" / "*" / "chunk_out" / stem_clean
-            candidates = sorted(glob.glob(str(base_dir2 / f"{img_name}*")))
-
-        if not candidates:
-            base_dir_fuzzy = data / "uploads" / "*" / "chunk_out" / f"{doc_stem}*"
-            candidates = sorted(glob.glob(str(base_dir_fuzzy / img_name)))
-            if not candidates:
-                candidates = sorted(glob.glob(str(base_dir_fuzzy / f"{img_name}*")))
-            if not candidates and "." in doc_stem:
-                stem_clean = doc_stem.rsplit(".", 1)[0]
-                base_dir_fuzzy2 = data / "uploads" / "*" / "chunk_out" / f"{stem_clean}*"
-                candidates = sorted(glob.glob(str(base_dir_fuzzy2 / img_name)))
-                if not candidates:
-                    candidates = sorted(glob.glob(str(base_dir_fuzzy2 / f"{img_name}*")))
-
-        if not candidates and "/" in img_name:
-            prefix = img_name.rsplit("/", 1)[0]
-            candidates = sorted(glob.glob(str(base_dir / prefix / "*")))
-            if not candidates:
-                base_dir_fuzzy = data / "uploads" / "*" / "chunk_out" / f"{doc_stem}*"
-                candidates = sorted(glob.glob(str(base_dir_fuzzy / prefix / "*")))
-            if not candidates and "." in doc_stem:
-                stem_clean = doc_stem.rsplit(".", 1)[0]
-                base_dir_extless = data / "uploads" / "*" / "chunk_out" / stem_clean
-                candidates = sorted(glob.glob(str(base_dir_extless / prefix / "*")))
-                if not candidates:
-                    base_dir_fuzzy2 = data / "uploads" / "*" / "chunk_out" / f"{stem_clean}*"
-                    candidates = sorted(glob.glob(str(base_dir_fuzzy2 / prefix / "*")))
-
-        if not candidates:
-            raise NotFound("image not found")
-        return str(Path(candidates[0]).resolve())
-
-    def find_image_global(self, img_name: str) -> Optional[str]:
-        """全局搜索 MinerU 图片（仅有图片 hash 时使用），返回绝对路径或 None。"""
-        img_name = img_name.rstrip("/")
-        if img_name.startswith("images/"):
-            img_name = img_name[7:]
-
-        data = Path(self._data_dir)
-        pattern = str(data / "uploads" / "*" / "chunk_out" / "*" / "images" / img_name)
-        candidates = sorted(glob.glob(pattern))
-        if not candidates:
-            name_wo_ext = img_name.rsplit(".", 1)[0] if "." in img_name else img_name
-            pattern = str(data / "uploads" / "*" / "chunk_out" / "*" / "images" / f"{name_wo_ext}*")
-            candidates = sorted(glob.glob(pattern))
-
-        if not candidates:
-            raise NotFound("image not found")
-        return str(Path(candidates[0]).resolve())
+    def usage(self, path: str, max_mb: int) -> dict:
+        """返回目录使用情况（读取失败时回退为默认值）。"""
+        try:
+            current_mb = round(self.dir_size_bytes(path) / (1024 * 1024), 2)
+            return {
+                "current_mb": current_mb,
+                "max_mb": max_mb,
+                "limit_enabled": max_mb > 0,
+                "ok": max_mb <= 0 or current_mb <= max_mb,
+            }
+        except Exception:
+            return {"current_mb": 0, "max_mb": max_mb, "limit_enabled": False, "ok": True}

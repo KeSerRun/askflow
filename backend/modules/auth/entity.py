@@ -22,6 +22,7 @@ class AuthenticatedUser:
     role: str
     access_token: str
     refresh_token: str
+    user_id: int | None = None
 
 
 class RefreshToken(Base):
@@ -30,6 +31,7 @@ class RefreshToken(Base):
     __tablename__ = "refresh_tokens"
 
     id = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id = mapped_column(Integer, nullable=True, index=True)   # 关联用户（users.id）
     username = mapped_column(String(64), nullable=False, index=True)
     role = mapped_column(String(32), nullable=False)
     token_hash = mapped_column(String(64), unique=True, nullable=False)

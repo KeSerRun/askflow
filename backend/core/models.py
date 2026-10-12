@@ -1,7 +1,7 @@
 """core.models —— 跨层共享的纯数据类型。
 
 只保留**被多个层共同使用**的类型（Document / ChatResponse / ChatStreamEvent）；
-单层专用类型下沉在各自适配器（adapters.pdf / adapters.queue）。
+单层专用类型下沉在各自适配器（如 adapters.pdf）。
 本模块不含任何框架/存储/HTTP 依赖。
 """
 

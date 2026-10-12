@@ -33,7 +33,8 @@ def register_success() -> JSONResponse:
 
 
 def _user_body(tokens: AuthenticatedUser) -> dict:
-    return {"username": tokens.username, "role": tokens.role}
+    return {"username": tokens.username, "role": tokens.role,
+            "user_id": tokens.user_id}
 
 
 def login_success(request: Request, tokens: AuthenticatedUser) -> JSONResponse:
@@ -68,5 +69,6 @@ def logged_out(request: Request) -> JSONResponse:
 def me(user: dict) -> JSONResponse:
     """当前登录用户信息（供前端展示/恢复）。"""
     return json({
-        "user": {"username": user.get("username", ""), "role": user.get("role", "")},
+        "user": {"username": user.get("username", ""), "role": user.get("role", ""),
+                 "user_id": user.get("user_id")},
     })

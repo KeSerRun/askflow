@@ -1,8 +1,6 @@
 """SkillLoader: 从 prompts 目录加载 identity 与 skills，供 LLM 构建 system message。
 
-支持的 skill 布局:
-  1. 扁平: <prompts_dir>/skills/<skill>.md
-  2. 嵌套: <prompts_dir>/skills/<skill>/SKILL.md (或 skill.md)
+skill 布局（扁平）: ``<prompts_dir>/style/<skill>.md``
 
 skill 文件格式 (YAML-like frontmatter + markdown body):
     ---
@@ -29,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from config._utils import _strip_quotes
-from infra.logger import logger
+from infra.util.logger import logger
 
 # ── Skill ──
 
@@ -149,19 +147,47 @@ def _parse_yaml_block(text: str) -> dict:
 
 # ── 工具函数 ──
 
-def _load_identity(prompts_dir: Path) -> str:
-    """从基线目录加载身份文件 (identity.md)。"""
-    f = prompts_dir / "identity.md"
-    if not f.exists():
+def _read_identity_body(path: Path) -> str:
+    """读取身份文件正文（剥离 frontmatter）。"""
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
         return ""
-    return f.read_text(encoding="utf-8").strip()
+    _, body = parse_frontmatter(text)
+    return (body or text).strip()
+
+
+def _load_identity(prompts_dir: Path) -> str:
+    """读取当前选中的身份文本。
+
+    身份为目录 ``prompts/identity/*.md`` 的多个预置：
+    - 活动项由 ``prompts/identity/.active`` 标记的文件名决定；
+    - 无标记时取目录内第一个 ``*.md``；
+    - 兼容旧版单文件 ``prompts/identity.md``。
+    仅返回正文（frontmatter 属元信息，不进入 system message）。
+    """
+    idir = prompts_dir / "identity"
+    if idir.is_dir():
+        files = sorted(idir.glob("*.md"))
+        if files:
+            active = idir / ".active"
+            if active.is_file():
+                name = active.read_text(encoding="utf-8").strip()
+                target = (idir / f"{name}.md")
+                if target.is_file() and target in files:
+                    return _read_identity_body(target)
+            return _read_identity_body(files[0])
+        return ""
+    legacy = prompts_dir / "identity.md"
+    if legacy.exists():
+        return _read_identity_body(legacy)
+    return ""
 
 
 class SkillLoader:
     """从 prompts 目录加载 identity 和 skills，供 LLM 构建 system message。
 
     Args:
-        prompts_dir: prompts 目录路径（含 identity.md 和 skills/ 子目录）。
+        prompts_dir: prompts 目录路径（含 identity.md 和 style/ 目录）。
     """
 
     def __init__(self, prompts_dir: str | Path):
@@ -177,35 +203,14 @@ class SkillLoader:
         )
 
     def _load_skills_from(self, prompts_dir: Path):
-        """从 prompts_dir 加载 skill 到 self._skills。"""
-        for file, fallback in self._scan_skills(prompts_dir):
-            self._register(self._load_one(file, fallback_name=fallback))
-
-    def _scan_skills(self, root: Path):
-        """递归扫描目录树，查找所有 skill 定义文件。"""
-        for f in sorted(root.glob("*.md")):
+        """从 prompts_dir 加载 skill 到 self._skills（扁平 style/*.md）。"""
+        for f in sorted(prompts_dir.glob("*.md")):
             if f.name.lower() in ("skill.md", "readme.md"):
                 continue
-            yield f, f.stem
-        for sub in sorted(root.iterdir()):
-            if not sub.is_dir():
-                continue
-            skill_file = self._find_skill_file(sub)
-            if skill_file is not None:
-                yield skill_file, sub.name
-            else:
-                yield from self._scan_skills(sub)
+            self._register(self._load_one(f, fallback_name=f.stem))
 
     @staticmethod
-    def _find_skill_file(directory: Path) -> Path | None:
-        """在目录中查找 skill 定义文件。"""
-        for name in ("SKILL.md", "skill.md"):
-            f = directory / name
-            if f.exists():
-                return f
-        return None
-
-    def _load_one(self, file: Path, fallback_name: str) -> Skill | None:
+    def _load_one(file: Path, fallback_name: str) -> Skill | None:
         """从单个 .md 文件加载一个 skill。"""
         try:
             text = file.read_text(encoding="utf-8")
@@ -251,10 +256,11 @@ class SkillLoader:
         """根据名称获取 skill。"""
         return self._skills.get(name)
 
+
 # ── 工作流 ──
 
 class WorkflowRouter:
-    """工作流路由器，管理 prompts/workflow/ 目录下的工作流文件。"""
+    """工作流路由器：管理 prompts/workflow/ 目录下的工作流文件。"""
 
     def __init__(self, prompts_dir: str):
         self.workflow_dir: Path = Path(prompts_dir)
@@ -306,9 +312,16 @@ class WorkflowRouter:
             for name, info in self._workflows.items()
         ]
 
+
 class SystemContext:
     def __init__(self, prompts_dir: str):
         self.prompts_dir = Path(prompts_dir)
         self.identity = _load_identity(self.prompts_dir)
-        self.style_router = SkillLoader(self.prompts_dir/"style")
-        self.workflow_router =  WorkflowRouter(self.prompts_dir/"workflow")
+        self.style_router = SkillLoader(self.prompts_dir / "style")
+        self.workflow_router = WorkflowRouter(self.prompts_dir / "workflow")
+
+    def reload(self) -> None:
+        """热重载 identity / style / workflow（Prompt 管理保存后调用，无需重启）。"""
+        self.identity = _load_identity(self.prompts_dir)
+        self.style_router = SkillLoader(self.prompts_dir / "style")
+        self.workflow_router = WorkflowRouter(self.prompts_dir / "workflow")

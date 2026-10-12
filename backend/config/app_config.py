@@ -31,7 +31,6 @@ class AppConfig:
 
     # ── 存储 ──
     storage_data_dir: str
-    storage_vector_dir: str
     storage_backend: str
 
     # ── 检索 ──
@@ -41,6 +40,7 @@ class AppConfig:
     retrieval_stop_words: list
 
     # ── 日志 ──
+    app_env: str
     log_path: str
     log_app_level: str
     log_http_level: str
@@ -53,12 +53,16 @@ class AppConfig:
     llm_base_url: str
     llm_model: str
     llm_reasoning_effort: str | None
+    llm_timeout: float
+    llm_max_retries: int
+    llm_health_url: str | None
+    milvus_health_url: str | None
+    minio_health_url: str | None
     embed_api_key: str | None
     embed_base_url: str
     embed_model: str
     embed_dim: int
-    llm_timeout: float
-    llm_max_retries: int
+    embed_health_url: str | None
 
     # ── 治理 ──
     context_history_max: int
@@ -67,17 +71,18 @@ class AppConfig:
     context_compression_ratio: float
     context_tool_page_chars: int
 
-    # ── 搜索 ──
-    search_backend: str
+    # ── 搜索（SearXNG） ──
     search_searxng_url: str | None
-    search_bocha_key: str | None
-    search_bing_key: str | None
     search_timeout: float
 
     # ── Agent ──
     agent_max_tool_iter: int
     agent_max_output_chars: int
     agent_checkpoint_enabled: bool
+
+    # ── 并发调优 ──
+    app_thread_pool: int      # FastAPI 同步接口线程池上限
+    app_workers: int          # uvicorn 进程数（>1 时内存态按进程隔离）
 
     # ── 超级用户 ──
     auth_superuser_users: list
@@ -86,21 +91,19 @@ class AppConfig:
     # ── MinerU ──
     mineru_base_url: str
     mineru_api_key: str | None
-    mineru_token_name: str
-    mineru_model_version: str
-    mineru_language: str
     mineru_max_concurrency: int
+    # 本地解析档位（4.0 tier）：flash / basic / standard
+    mineru_tier: str
+    mineru_health_url: str | None
 
     # ── 上传 ──
-    upload_max_user_mb: int
+    upload_max_session_mb: int
 
     # ── 基础设施（后端开关） ──
     storage_db_url: str
-    vector_backend: str
     vector_milvus_uri: str
     vector_milvus_token: str | None
     vector_milvus_collection: str
-    object_backend: str
     object_minio_endpoint: str
     object_minio_access_key: str | None
     object_minio_secret_key: str | None
@@ -108,9 +111,6 @@ class AppConfig:
     object_minio_secure: bool
     cache_backend: str
     redis_url: str
-    mq_backend: str
-    mq_rabbitmq_url: str
-    mq_parse_queue: str
 
     # ── 运行时 ──
     auth_jwt_secret: str
@@ -125,11 +125,11 @@ ENV_TO_FIELD: dict[str, str] = {v: k for k, v in FIELD_TO_ENV.items()}
 
 # 需按路径归一的字段（相对 backend/ → 绝对路径）
 _PATH_FIELDS = frozenset({
-    "storage_data_dir", "storage_vector_dir", "log_path",
+    "storage_data_dir", "log_path",
     "web_dist_dir", "web_assets_dir", "web_index_file",
 })
 # 需转小写的字段
-_LOWER_FIELDS = frozenset({"storage_backend", "vector_backend", "object_backend", "mq_backend", "cache_backend"})
+_LOWER_FIELDS = frozenset({"storage_backend", "cache_backend"})
 # 类型 → _get 的转换参数（int/float/bool/list）；其余按 str 处理
 _CAST_KWARGS = {
     int: {"cast": int},
@@ -249,14 +249,35 @@ conf = Config()
 # ── 后台配置读写（.env 单源） ──
 
 def config_env_dict() -> dict:
-    """导出当前配置为 ``{env 名: 值}``（后台展示/编辑用，key 与表单对齐）。"""
+    """导出当前配置为 ``{env 名: 值}``（后台展示/编辑用，key 与表单对齐）。
+
+    路径类字段（``_PATH_FIELDS``）回显**原始配置值**（如 ``../frontend/dist``），
+    而非标准化后的绝对路径——避免管理后台保存时把宿主绝对路径写回 ``.env``。
+    """
     cfg = load_app_config()
+    raw_env = dict(os.environ)
+    raw_dotenv = {**_load_dotenv(_env_default_file), **_load_dotenv(_dotenv_file)}
     out: dict = {}
+
+    def _raw(field: str) -> str:
+        """读取环境链中的原始值（不归一化），"none"/缺失返回空串。"""
+        key = field.upper()
+        v = raw_env.get(key)
+        if v is None:
+            v = raw_dotenv.get(key)
+        if not v:
+            return ""
+        v = _strip_quotes(v)
+        return "" if v.strip().lower() == "none" else v
+
     for field, env_name in FIELD_TO_ENV.items():
-        try:
-            val = getattr(cfg, field)
-        except AttributeError:
-            continue
+        if field in _PATH_FIELDS:
+            val = _raw(field)
+        else:
+            try:
+                val = getattr(cfg, field)
+            except AttributeError:
+                continue
         if isinstance(val, (str, int, float, bool, list)):
             out[env_name] = val
     return out

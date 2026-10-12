@@ -18,7 +18,7 @@ from typing import Optional
 
 import jwt
 
-from core.errors import (
+from core.app_errors import (
     AuthError,  # noqa: F401
     InvalidCredentials,
     InvalidRefreshToken,
@@ -30,8 +30,8 @@ REFRESH_COLLECTION = "refresh_tokens"
 
 
 def normalize_username(username: str) -> str:
-    """用户名规范化：去除首尾空白并转小写（领域规则）。"""
-    return username.strip().lower()
+    """用户名规范化：去除首尾空白（**保留输入大小写**，登录时大小写不敏感匹配）。"""
+    return username.strip()
 
 
 class _MemoryRefreshStore:
@@ -110,7 +110,7 @@ class AuthService:
         row = self._users.check_user_credentials(username, password)
         if not row:
             raise InvalidCredentials(username)
-        return self._issue(row["username"], row["role"])
+        return self._issue(row["username"], row["role"], row.get("user_id"))
 
     def refresh(self, refresh_token: str) -> AuthenticatedUser:
         """用 refresh token 换取新的令牌对（轮换：作废旧 refresh）。
@@ -128,7 +128,7 @@ class AuthService:
             raise InvalidRefreshToken("refresh token expired")
         # 轮换：先作废旧令牌，再签发新对
         self._store.delete_where(REFRESH_COLLECTION, {"token_hash": token_hash})
-        return self._issue(row.username, row.role)
+        return self._issue(row.username, row.role, getattr(row, "user_id", None))
 
     def logout(self, refresh_token: str) -> int:
         """按 refresh token 吊销该用户全部 refresh 令牌（多端同时登出）。"""
@@ -151,26 +151,26 @@ class AuthService:
 
     # ── 内部 ──
 
-    def _issue(self, username: str, role: str) -> AuthenticatedUser:
-        """签发 access JWT + 随机 refresh（哈希入库）。"""
-        access = jwt.encode(
-            {
-                "username": username,
-                "role": role,
-                "type": "access",
-                "exp": int(time.time()) + self._access_ttl,
-            },
-            self._secret,
-            algorithm=self._algorithm,
-        )
+    def _issue(self, username: str, role: str, user_id=None) -> AuthenticatedUser:
+        """签发 access JWT（含 user_id）+ 随机 refresh（哈希入库）。"""
+        claims = {
+            "username": username,
+            "role": role,
+            "type": "access",
+            "exp": int(time.time()) + self._access_ttl,
+        }
+        if user_id is not None:
+            claims["user_id"] = user_id
+        access = jwt.encode(claims, self._secret, algorithm=self._algorithm)
         refresh = secrets.token_urlsafe(48)
         self._store.insert(REFRESH_COLLECTION, RefreshToken(
+            user_id=user_id,
             username=username,
             role=role,
             token_hash=self._hash(refresh),
             expires_at=int(time.time()) + self._refresh_ttl,
         ))
-        return AuthenticatedUser(username=username, role=role,
+        return AuthenticatedUser(user_id=user_id, username=username, role=role,
                                  access_token=access, refresh_token=refresh)
 
     @staticmethod

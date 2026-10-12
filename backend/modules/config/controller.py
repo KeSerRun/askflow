@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
 @router.get("/config/schema")
-async def get_config_schema(user: dict = Depends(require_admin)):
+def get_config_schema(user: dict = Depends(require_admin)):
     """返回配置项 schema（由 AppConfig 自动派生），前端据此渲染表单。
 
     Returns:
@@ -25,7 +25,7 @@ async def get_config_schema(user: dict = Depends(require_admin)):
 
 
 @router.get("/config")
-async def get_config(user: dict = Depends(require_admin)):
+def get_config(user: dict = Depends(require_admin)):
     """获取当前配置（key=env 名）。
 
     Returns:
@@ -35,7 +35,7 @@ async def get_config(user: dict = Depends(require_admin)):
 
 
 @router.put("/config")
-async def update_config(payload: dict = Body(...), user: dict = Depends(require_admin)):
+def update_config(payload: dict = Body(...), user: dict = Depends(require_admin)):
     """更新配置：写回 `.env` 并重新加载（立即生效）。
 
     Args:

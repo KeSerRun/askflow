@@ -120,7 +120,8 @@ const handleLogin = (e) => {
         userStore.username = user.username
         userStore.role = user.role
         message.success('登录成功')
-        router.push(userStore.role === 'admin' ? '/admin/dashboard' : '/chat')
+        // 管理员也是用户：登录后统一进入对话页，后台从对话页内进入
+        router.push('/chat')
       }
     } catch (error) {
       const detail = error.response?.data?.detail || error.response?.data?.message || '网络错误'
