@@ -350,6 +350,26 @@ class DocumentService:
             return None
         return data, self._media_of(name), name
 
+    def read_chunk_image(self, key: str) -> Optional[tuple[bytes, str, str]]:
+        """按对象键读取 MinerU 解析图片（会话附件或系统文档的 ``chunk_out/.../images/``）。
+
+        与会话附件/知识库图片共用同一入口：键形如
+        ``sessions/{user}/{session_id}/chunk_out/{stem}/images/img_0001.png`` 或
+        ``uploads/__system__/chunk_out/{stem}/images/img_0001.png``。
+
+        Returns:
+            tuple ``(bytes, media_type, filename)`` 或 None。
+        """
+        key = str(key or "").lstrip("/")
+        if ("/chunk_out/" not in key) or ("/images/" not in key):
+            return None
+        if not key.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".tif", ".tiff")):
+            return None
+        data = self._files.get_bytes(key)
+        if not data:
+            return None
+        return data, self._media_of(key), os.path.basename(key)
+
     def read_image_global(self, img_name: str) -> Optional[tuple[bytes, str, str]]:
         """全局搜索 MinerU 图片（仅有图片 hash 时使用）。
 

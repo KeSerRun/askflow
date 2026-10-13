@@ -130,15 +130,57 @@ class DatabaseService:
     # ── 系统级文档 ──
 
     def list_system_docs(self, *, page: int = 1, page_size: int = 0) -> dict:
-        """列出系统文档（``__system__`` 分区）及其切块数（分页）。"""
+        """列出已入库的系统文档：向量库中 ``__system__`` 分区的来源及其切块数（分页）。
+
+        以**向量库**为准——只有真正切块入库的文档才会出现（chunks>0）；
+        MinIO 原始文件清单（含未入库文件）见 :meth:`list_system_raw_files`。
+        """
         vs = self._vector
-        sources = (vs.get_sources() if vs else []) or []
         chunk_counts: dict[str, int] = {}
         for m in (vs.metadata if vs else []) or []:
-            if m.get("source"):
-                chunk_counts[m["source"]] = chunk_counts.get(m["source"], 0) + 1
-        items = [{"name": s, "chunks": chunk_counts.get(s, 0)} for s in sorted(sources)]
+            if m.get("partition") != SYSTEM_PARTITION:
+                continue
+            src = m.get("source")
+            if src:
+                chunk_counts[src] = chunk_counts.get(src, 0) + 1
+        items = [
+            {"name": s, "chunks": chunk_counts[s]}
+            for s in sorted(chunk_counts)
+        ]
         return paginate(items, page, page_size, key="documents")
+
+    def list_system_raw_files(self, *, page: int = 1, page_size: int = 0) -> dict:
+        """列出上传到 MinIO ``uploads/__system__/`` 的原始文件（分页）。
+
+        以**对象存储实际文件**为准（含未成功向量化的文件——chunks=0），
+        是否已入库（``imported`` / ``chunks``）从向量库统计。
+        """
+        vs = self._vector
+        prefix = f"uploads/{SYSTEM_PARTITION}/"
+        names: set[str] = set()
+        for obj in self._files.list_all(prefix):
+            name = obj["name"]
+            if "/chunk_out/" in name or not name.startswith(prefix):
+                continue
+            fname = name[len(prefix):]
+            if fname:
+                names.add(fname)
+        chunk_counts: dict[str, int] = {}
+        for m in (vs.metadata if vs else []) or []:
+            if m.get("partition") != SYSTEM_PARTITION:
+                continue
+            src = m.get("source")
+            if src:
+                chunk_counts[src] = chunk_counts.get(src, 0) + 1
+        items = [
+            {
+                "name": s,
+                "chunks": chunk_counts.get(s, 0),
+                "imported": chunk_counts.get(s, 0) > 0,
+            }
+            for s in sorted(names)
+        ]
+        return paginate(items, page, page_size, key="files")
 
     # ── MD 切块可视化（按页展示文档 md，标记每页内的切块边界） ──
 
@@ -438,17 +480,6 @@ class DatabaseService:
             task["status"] = "finished"
             task["finished_at"] = datetime.now().isoformat(timespec="seconds")
 
-    def upload_status(self) -> dict:
-        """返回最近一个上传任务的状态；空闲时 ``{"status": "idle"}``。"""
-        with self._lock:
-            processing = [v for v in self._tasks.values() if v["status"] == "processing"]
-            finished = [v for v in self._tasks.values() if v["status"] == "finished"]
-        if processing:
-            return {"status": "processing", "task": processing[-1]}
-        if finished:
-            return {"status": "finished", "task": finished[-1]}
-        return {"status": "idle"}
-
     def upload_task(self, task_id: str) -> dict:
         """按任务 ID 返回上传任务详情（含逐文件状态）。
 
@@ -461,40 +492,6 @@ class DatabaseService:
             raise KeyError(task_id)
         return {**task, "files": dict(task.get("files") or {})}
 
-    def cleanup_upload(self, task_id: str) -> dict:
-        """清理某次上传任务在对象存储里的上传文件（``uploads/__system__/<name>`` 原文件）。
-
-        成功后文档的向量库与正文产物（chunk_out）不受影响，仅移除落盘的原始文件；
-        失败文件的残留解析产物（``chunk_out/<stem>/``）一并清理。任务随后移除。
-
-        Raises:
-            KeyError: 任务不存在。
-        """
-        with self._lock:
-            task = self._tasks.get(task_id)
-            if task is None:
-                raise KeyError(task_id)
-            filenames = list(task.get("filenames") or [])
-            files_state = dict(task.get("files") or {})
-        deleted = 0
-        for fname in filenames:
-            stem = str(Path(fname).stem)
-            try:
-                self._files.delete(f"uploads/{SYSTEM_PARTITION}/{fname}")
-                deleted += 1
-            except Exception:  # noqa: BLE001
-                pass
-            if files_state.get(fname) == "failed":
-                try:
-                    self._files.delete_prefix(f"uploads/{SYSTEM_PARTITION}/chunk_out/{stem}")
-                except Exception:  # noqa: BLE001
-                    pass
-        with self._lock:
-            self._tasks.pop(task_id, None)
-        return {"message": f"已清理 {deleted} 个上传文件", "deleted": deleted}
-
-    # ── 删除 ──
-
     def delete(self, source: str) -> None:
         """删除指定文档（向量 + 原文件 + chunk 产物）。"""
         if not source:
@@ -502,16 +499,10 @@ class DatabaseService:
         self._vector.delete_by_sources([source])
         self._docs.purge(SYSTEM_PARTITION, [source])
 
-    def batch_delete(self, sources: list[str]) -> dict:
-        """批量删除；逐条容错，返回成功/失败清单。"""
-        if not sources:
-            raise ValueError("缺少参数 sources")
-        deleted, errors = [], []
-        for source in sources:
-            try:
-                self.delete(source)
-                deleted.append(source)
-            except Exception as e:  # noqa: BLE001
-                errors.append({"source": source, "error": str(e)})
-                logger.error(f"批量删除失败 ({source}): {e}")
-        return {"message": f"成功删除 {len(deleted)} 个文档", "deleted": deleted, "errors": errors}
+    def delete_raw_file(self, source: str) -> dict:
+        """仅删除 ``uploads/__system__/`` 下的原始文件；向量与切块产物保留。"""
+        if not source:
+            raise ValueError("缺少参数 source")
+        name = os.path.basename(source)
+        self._files.delete(f"uploads/{SYSTEM_PARTITION}/{name}")
+        return {"message": f"已删除原始文件 {name}（向量/切块保留）"}

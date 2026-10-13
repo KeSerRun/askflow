@@ -25,9 +25,9 @@
 6. **工具优先级**：按以下顺序尝试，前者无法满足时再降级。
    - **检索** → `search_knowledge_base`（首选，覆盖所有类型）
    - **补全片段** → `read_chunk_context`（检索结果不完整时）
-   - **通读全文** → `read_full_document`（需要完整内容时读全文）
+   - **通读全文** → `read_knowledge_base_document`（知识库）；`read_session_document`（本会话上传文档）（需要完整内容时读全文）
    - **联网搜索** → `web_search`（知识库没有时）
-   - **列表/归档** → `list_documents`（按需调用）
+   - **列表/归档** → `list_knowledge_base_files`（知识库文件）或 `list_session_resources`（本会话上传的文件/图片）（按需调用）
 
 ## 输出规范
 

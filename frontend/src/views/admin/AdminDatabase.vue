@@ -16,25 +16,41 @@
             支持 PDF / 图片 / Word / PPT / Excel（MinerU 解析）。选择后自动批量上传，可在下方查看逐文件进度。
           </n-text>
 
-          <!-- 上传任务面板 -->
-          <div v-if="uploadTask" class="upload-panel" style="margin-top: 14px">
+          <!-- 上传面板：已加载过一次即固定显示（避免异步数据未到时整块消失导致分页器闪没） -->
+          <div v-if="rawLoaded || uploadTask" class="upload-panel" style="margin-top: 14px">
             <n-space justify="space-between" align="center">
               <n-text strong>上传任务</n-text>
               <n-space size="small" align="center">
-                <n-tag :type="taskTagType" size="small">{{ taskStatusText }}</n-tag>
+                <n-button size="tiny" quaternary @click="loadRawFiles">刷新</n-button>
+                <n-text depth="3" style="font-size: 12px">原始文件 {{ store.systemFilesTotal }} 个</n-text>
+              </n-space>
+            </n-space>
+
+            <!-- 仅上传进行中显示进度 -->
+            <template v-if="uploadTask?.status === 'processing'">
+              <n-space align="center" style="margin-top: 10px">
+                <n-tag :type="taskTagType" size="small">处理中</n-tag>
                 <n-text depth="3" style="font-size: 12px">
                   成功 {{ uploadTask.success || 0 }} / 失败 {{ uploadTask.fail || 0 }} / 共 {{ uploadTask.total || 0 }}
                 </n-text>
               </n-space>
-            </n-space>
-            <n-progress type="line" :percentage="uploadPercent" :show-label="false" style="margin-top: 10px" />
+              <n-progress type="line" :percentage="uploadPercent" :show-label="false" style="margin-top: 6px" />
+            </template>
+
+            <!-- 合并表：文件名 + 状态 + 操作（删除仅删原文件） -->
             <n-data-table
-              v-if="taskRows.length" :columns="taskColumns" :data="taskRows" :pagination="false"
-              :bordered="false" size="small" :single-line="true" style="margin-top: 10px"
+              v-if="queueRows.length" :columns="queueColumns" :data="queueRows"
+              :bordered="false" :single-line="true" size="small" :pagination="false" style="margin-top: 10px"
             />
-            <n-space v-if="uploadTask.status === 'finished'" justify="end" style="margin-top: 10px">
-              <n-button size="tiny" :disabled="!uploadTask.failures?.length" @click="retryFailed">重试失败</n-button>
-              <n-button size="tiny" quaternary @click="clearUploadTask">清空</n-button>
+            <n-empty v-else description="暂无原始文件" style="padding: 16px 0" />
+
+            <n-space v-if="store.systemFilesTotal > 0" justify="center" style="margin-top: 8px">
+              <n-pagination
+                v-model:page="rawPage" :page-size="rawPageSize" :item-count="store.systemFilesTotal"
+                :page-slot="7" show-size-picker :page-sizes="pageSizes"
+                @update:page="loadRawFiles" @update:page-size="changeRawSize"
+              />
+              <n-text depth="3" style="font-size: 12px; line-height: 32px">共 {{ store.systemFilesTotal }} 条</n-text>
             </n-space>
           </div>
         </n-card>
@@ -342,22 +358,48 @@ async function loadSystemDocs() {
 }
 function changeSystemSize(size) { systemPageSize.value = size; systemPage.value = 1; loadSystemDocs() }
 
-// ── 上传任务面板 ──
+// ── 上传队列：MinIO 原始文件（文件维，独立分页） ──
+const rawPage = ref(1)
+const rawPageSize = ref(20)
+const rawLoaded = ref(false)   // 首次加载完成后置 true：面板不再随异步数据消失/闪没
+async function loadRawFiles() {
+  try {
+    await store.fetchSystemFiles({ page: rawPage.value, page_size: rawPageSize.value })
+    rawLoaded.value = true
+  } catch (e) { message.error(e.message) }
+}
+function changeRawSize(size) { rawPageSize.value = size; rawPage.value = 1; loadRawFiles() }
+
+// ── 上传任务面板（临时态：仅进行中叠加，完成后自动收敛回纯 MinIO 队列） ──
 const uploadTask = ref(null)
-const pendingFiles = ref([])
 let timer = null
 
 const isUploading = computed(() => uploadTask.value?.status === 'processing')
-const taskStatusText = computed(() => (uploadTask.value?.status === 'processing' ? '处理中' : '已完成'))
 const taskTagType = computed(() => (uploadTask.value?.status === 'processing' ? 'info' : 'success'))
 const uploadPercent = computed(() => {
   const t = uploadTask.value
   if (!t || !t.total) return 0
   return Math.round(((t.success || 0) + (t.fail || 0)) / t.total * 100)
 })
-const taskRows = computed(() => {
-  const files = uploadTask.value?.files || {}
-  return Object.keys(files).map(name => ({ name, state: files[name] }))
+// 合并表数据：仅以 MinIO 原始文件（文件维）为准（已入库/未入库）；
+// 仅在"上传进行中"临时叠加任务文件与状态，完成后自动收敛，保证刷新前后一致
+const queueRows = computed(() => {
+  if (uploadTask.value?.status === 'processing') {
+    const taskFiles = uploadTask.value?.files || {}
+    const map = {}
+    for (const f of store.systemFiles || []) map[f.name] = { name: f.name, imported: !!f.imported }
+    for (const name of Object.keys(taskFiles)) {
+      if (!map[name]) map[name] = { name, imported: false }
+    }
+    return Object.keys(map).map(name => ({
+      name,
+      state: taskFiles[name] || (map[name].imported ? 'imported' : 'not_imported'),
+    }))
+  }
+  return (store.systemFiles || []).map(f => ({
+    name: f.name,
+    state: f.imported ? 'imported' : 'not_imported',
+  }))
 })
 
 const _TASK_STATE = {
@@ -365,8 +407,10 @@ const _TASK_STATE = {
   processing: { type: 'warning', text: '解析中' },
   success: { type: 'success', text: '成功' },
   failed: { type: 'error', text: '失败' },
+  imported: { type: 'success', text: '已入库' },
+  not_imported: { type: 'default', text: '未入库' },
 }
-const taskColumns = [
+const queueColumns = [
   { title: '文件名', key: 'name', ellipsis: { tooltip: true } },
   {
     title: '状态', key: 'state', width: 110,
@@ -374,6 +418,19 @@ const taskColumns = [
       const s = _TASK_STATE[r.state] || { type: 'default', text: r.state }
       return h(NTag, { type: s.type, size: 'small', bordered: false }, { default: () => s.text })
     },
+  },
+  {
+    title: '操作', key: 'actions', width: 90,
+    render: (row) => h(NPopconfirm,
+      { onPositiveClick: () => removeRawFile(row.name) },
+      {
+        trigger: () => h(NButton, {
+          size: 'tiny', quaternary: true, type: 'error',
+          loading: deletingSources.value.has(row.name),
+          disabled: deletingSources.value.has(row.name) || row.state === 'processing' || row.state === 'pending',
+        }, { icon: () => h(NIcon, { component: TrashOutline }) }),
+        default: () => `仅删除原始文件 ${row.name}？（向量/切块保留）`,
+      }),
   },
 ]
 
@@ -387,7 +444,16 @@ function startPolling(taskId) {
       uploadTask.value = t
       if (t.status !== 'processing') {
         stopPolling()
-        loadSystemDocs(); refreshChunkTypes()
+        loadSystemDocs(); loadRawFiles(); refreshChunkTypes()
+        // 收敛：任务结束即回到纯 MinIO 队列视图，与刷新后一致；结果用 toast 汇总
+        const ok = t.success || 0
+        const bad = t.fail || 0
+        if (bad > 0) {
+          message.warning(`上传完成：成功 ${ok} / 失败 ${bad}（失败文件未在队列中，可重新选择上传）`)
+        } else {
+          message.success(`上传完成：成功 ${ok} 个文件`)
+        }
+        uploadTask.value = null
       }
     } catch { /* ignore */ }
   }, 1500)
@@ -395,7 +461,6 @@ function startPolling(taskId) {
 
 async function submitFiles(files) {
   if (!files.length) return
-  pendingFiles.value = files
   try {
     const res = await store.uploadSystemDocs(files)
     const names = res.files || []
@@ -413,31 +478,6 @@ async function submitFiles(files) {
 function doUpload({ fileList }) {
   const files = fileList.map(f => f.file).filter(Boolean)
   submitFiles(files)
-}
-
-function retryFailed() {
-  const failed = new Set(uploadTask.value?.failures || [])
-  const retry = pendingFiles.value.filter(f => failed.has(f.name))
-  if (!retry.length) { message.warning('没有可重试的文件'); return }
-  stopPolling()
-  uploadTask.value = null
-  submitFiles(retry)
-}
-
-async function clearUploadTask() {
-  stopPolling()
-  const tid = uploadTask.value?.id
-  if (tid) {
-    try {
-      const r = await store.clearUploadTask(tid)
-      message.success(r?.message || '已清理本次上传文件')
-    } catch (e) {
-      message.error(e?.message || '清理上传文件失败')
-    }
-  }
-  uploadTask.value = null
-  pendingFiles.value = []
-  loadSystemDocs(); refreshChunkTypes()
 }
 const systemColumns = [
   { title: '文件名', key: 'name', ellipsis: { tooltip: true }, render: (row) => h('a', { style: 'cursor:pointer; color:var(--primary-color)', onClick: () => jumpToMdView(row.name) }, row.name) },
@@ -468,13 +508,24 @@ async function removeDoc(source) {
   try {
     await store.deleteDocument(source)
     message.success('已删除')
-    loadChunks(); loadSystemDocs(); refreshChunkTypes()
+    loadChunks(); loadSystemDocs(); loadRawFiles(); refreshChunkTypes()
+  } catch (e) { message.error(e.message) }
+  finally { deletingSources.value.delete(source) }
+}
+
+async function removeRawFile(source) {
+  if (deletingSources.value.has(source)) return
+  deletingSources.value.add(source)
+  try {
+    await store.deleteSystemRawFile(source)
+    message.success('已删除原始文件')
+    loadRawFiles()
   } catch (e) { message.error(e.message) }
   finally { deletingSources.value.delete(source) }
 }
 
 function handleTab(name) {
-  if (name === 'system') loadSystemDocs()
+  if (name === 'system') { loadSystemDocs(); loadRawFiles() }
 }
 watch(tab, (name) => handleTab(name))
 
@@ -483,6 +534,7 @@ onMounted(async () => {
     refreshChunkTypes(),
     loadChunks(),
     loadSystemDocs(),
+    loadRawFiles(),
   ])
 })
 onUnmounted(() => { if (timer) clearInterval(timer) })

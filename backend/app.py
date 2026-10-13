@@ -58,7 +58,11 @@ app = FastAPI(lifespan=lifespan)
 register_exception_handlers(app)
 
 # 集中注册 HTTP 中间件（CORS + 调用记录 + 请求日志）
-register_middlewares(app, request_log_service=get_container().get("request_log_service"))
+# 调用记录落库策略由中间件按 APP_ENV 决定：生产只落 HTTP>=300，开发全记
+register_middlewares(
+    app,
+    request_log_service=get_container().get("request_log_service"),
+)
 
 
 # ── 路由注册 ──────────────────────────────────────────────────────
@@ -102,11 +106,15 @@ except Exception:  # noqa: BLE001
     pass
 
 if __name__ == "__main__":
-    logger.info("主页地址: http://127.0.0.1:11000 (Press CTRL+RIGHT-CLICK to enter)")
+    import os as _os2
+
     import uvicorn
 
+    # 端口：优先 PORT 环境变量（便于换端口解决浏览器权限记录），默认 11000
+    _port = int(_os2.environ.get("PORT", "11000"))
+    logger.info(f"主页地址: http://127.0.0.1:{_port} (Press CTRL+RIGHT-CLICK to enter)")
     _workers = int(conf.app_workers or 1)
     if _workers > 1:
-        uvicorn.run("app:app", host="0.0.0.0", port=11000, workers=_workers)
+        uvicorn.run("app:app", host="0.0.0.0", port=_port, workers=_workers)
     else:
-        uvicorn.run(app, host="0.0.0.0", port=11000)
+        uvicorn.run(app, host="0.0.0.0", port=_port)

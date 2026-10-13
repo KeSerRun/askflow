@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from core.app_errors import AppError
 from core.concurrency import to_thread
 from core.deps import database_service, require_admin
-from .dto import BatchDeleteBody, MdViewActionBody
+from .dto import MdViewActionBody
 from . import vo as views
 
 router = APIRouter(prefix="/api/admin/database", tags=["admin"])
@@ -44,8 +44,18 @@ def list_system_docs(
     page_size: int = Query(0, ge=0, le=500),
     user: dict = Depends(require_admin),
 ):
-    """列出系统级文档（``__system__`` 分区，分页）。"""
+    """列出已入库的系统文档（向量库 ``__system__`` 分区按 source 聚合，分页）。"""
     return views.ok(database_service.list_system_docs(page=page, page_size=page_size))
+
+
+@router.get("/system_files")
+def list_system_raw_files(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(0, ge=0, le=500),
+    user: dict = Depends(require_admin),
+):
+    """列出 MinIO ``uploads/__system__/`` 原始文件（上传队列，含未入库文件，分页）。"""
+    return views.ok(database_service.list_system_raw_files(page=page, page_size=page_size))
 
 
 @router.get("/md_view")
@@ -83,26 +93,11 @@ async def upload_system(files: List[UploadFile] = File(...), user: dict = Depend
     return views.ok(await to_thread(database_service.upload_system, files_data))
 
 
-@router.get("/upload/status")
-def upload_status(user: dict = Depends(require_admin)):
-    """查询最近的上传任务状态。"""
-    return views.ok(database_service.upload_status())
-
-
 @router.get("/upload/task/{task_id}")
 def upload_task(task_id: str, user: dict = Depends(require_admin)):
     """按任务 ID 查询上传详情（含逐文件状态）。"""
     try:
         return views.ok(database_service.upload_task(task_id))
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
-
-
-@router.post("/upload/{task_id}/clean")
-def clean_upload(task_id: str, user: dict = Depends(require_admin)):
-    """清理某次上传任务写入对象存储的原文件（失败文件连同残留解析产物），任务随后移除。"""
-    try:
-        return views.ok(database_service.cleanup_upload(task_id))
     except KeyError:
         raise HTTPException(status_code=404, detail=f"任务不存在: {task_id}")
 
@@ -135,7 +130,10 @@ def delete_document(
     return views.deleted(f"文档 '{source}' 已删除")
 
 
-@router.post("/batch_delete")
-def batch_delete(body: BatchDeleteBody, user: dict = Depends(require_admin)):
-    """批量删除多个文档。"""
-    return views.ok(database_service.batch_delete(body.sources))
+@router.delete("/system_file")
+def delete_system_raw_file(
+    source: str = Query(...),
+    user: dict = Depends(require_admin),
+):
+    """仅删除 ``__system__`` 分区下的原始文件；向量与切块产物保留。"""
+    return views.ok(database_service.delete_raw_file(source))

@@ -121,6 +121,10 @@ body {
 .app-shell {
   min-height: 100vh;
   background-color: var(--color-bg-body);
+  /* 极淡的暖调渐变（亮色下几乎不可见，暗色下增加层次） */
+  background-image: radial-gradient(1200px 600px at 15% -10%, var(--color-primary-glow-20), transparent 60%),
+    radial-gradient(1000px 500px at 100% 110%, var(--color-primary-glow-20), transparent 55%);
+  background-attachment: fixed;
 }
 
 ::-webkit-scrollbar {

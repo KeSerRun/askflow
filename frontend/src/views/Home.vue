@@ -610,13 +610,17 @@ const statusLabels = {
     if (info.tool === 'read_full_document' && info.filename) {
       return `${prefix}正在阅读: ${info.filename}…`
     }
+    if ((info.tool === 'read_knowledge_base_document' || info.tool === 'read_session_document') && info.filename) {
+      return `${prefix}正在阅读: ${info.filename}…`
+    }
     if (info.tool === 'web_search' && info.query) {
       const q = Array.isArray(info.query) ? info.query[0] : info.query
       return `${prefix}正在联网搜索: ${q}…`
     }
     const toolNames = {
       search_knowledge_base: `${prefix}正在检索知识库…`,
-      read_full_document: `${prefix}正在阅读文档全文…`,
+      read_knowledge_base_document: `${prefix}正在阅读知识库文档…`,
+      read_session_document: `${prefix}正在阅读文档全文…`,
       web_search: `${prefix}正在联网搜索…`,
     }
     return toolNames[info.tool] || `${prefix}正在调用工具: ${info.tool}…`
@@ -629,6 +633,9 @@ const statusLabels = {
       return `✅ 联网搜索完成`
     }
     if (info.tool === 'read_full_document') {
+      return `✅ 文档阅读完成`
+    }
+    if (info.tool === 'read_knowledge_base_document' || info.tool === 'read_session_document') {
       return `✅ 文档阅读完成`
     }
     if (info.tool === 'ask_user_for_clarification') {
@@ -1045,6 +1052,14 @@ onUnmounted(() => {
   animation: fadeIn 0.2s ease-out;
 }
 
+.upload-status-bar .upload-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--color-primary);
+  animation: thinkingBounce 1.4s infinite ease-in-out both;
+}
+
 .upload-dot {
   width: 8px;
   height: 8px;
@@ -1086,11 +1101,14 @@ onUnmounted(() => {
 
 /* 规划期任务清单 */
 .todo-panel {
-  margin: 10px 24px 0;
-  padding: 10px 14px;
+  margin: 12px auto 0;
+  max-width: 880px;
+  width: calc(100% - 48px);
+  padding: 12px 16px;
   border: 1px solid var(--color-border);
-  border-radius: 10px;
-  background: rgba(24, 160, 88, 0.04);
+  border-radius: 12px;
+  background: rgba(24, 160, 88, 0.05);
+  box-shadow: 0 1px 3px var(--color-shadow-card);
 }
 .todo-header {
   font-size: 13px;

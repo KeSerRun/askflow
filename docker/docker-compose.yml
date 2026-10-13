@@ -42,6 +42,8 @@ services:
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
+      # 放宽连接上限，避免多 worker / 大并发压测打爆 max_connections
+      - --max-connections=1000
     ports:
       - "${MYSQL_PORT:-3306}:3306"
     volumes:
@@ -316,6 +318,9 @@ services:
       OBJECT_MINIO_BUCKET: rag-files
       CACHE_BACKEND: redis
       REDIS_URL: redis://redis:6379/0
+      # 并发调优：生产/开发同配置；调用记录落库策略由 APP_ENV 决定（生产只记 HTTP>=300）
+      APP_THREAD_POOL: 20
+      APP_WORKERS: 1
       # 本地嵌入服务（服务名互联；clip-api 容器内监听 80，7997 只是宿主映射）
       EMBED_BASE_URL: http://embedding:80/v1
       # 容器内健康检查地址（覆盖 ../backend/.env 里固化的 127.0.0.1）

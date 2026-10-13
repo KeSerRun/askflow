@@ -15,7 +15,7 @@ class ToolServiceTest(unittest.TestCase):
     def test_seed_is_idempotent(self):
         first = self.svc.seed_builtins()
         second = self.svc.seed_builtins()
-        self.assertEqual(first, 15)
+        self.assertEqual(first, 17)
         self.assertEqual(second, 0)
 
     def test_runtime_defs_include_builtins(self):
@@ -33,7 +33,7 @@ class ToolServiceTest(unittest.TestCase):
         self.svc.seed_builtins()
         reg = ToolRegistry()
         reg.load_defs(self.svc.runtime_defs())
-        self.assertEqual(len(reg._tools), 15)
+        self.assertEqual(len(reg._tools), 17)
         out = reg.dispatch(
             "set_goal", '{"goal": "Briefing"}',
             ctx=ToolContextAdapter(),
@@ -61,11 +61,12 @@ class ToolServiceTest(unittest.TestCase):
         from agent.tools.registry import BUILTIN_TOOLS
 
         flags = {d["name"]: d.get("concurrent_safe", False) for d in BUILTIN_TOOLS}
-        for name in ("search_knowledge_base", "list_documents",
-                     "read_chunk_context"):
+        for name in ("search_knowledge_base", "list_knowledge_base_files",
+                     "list_session_resources", "read_chunk_context"):
             self.assertTrue(flags[name], f"{name} 应由 @tool 标注为并发安全")
         self.assertFalse(flags["web_search"])
-        self.assertFalse(flags["read_full_document"])
+        self.assertFalse(flags["read_knowledge_base_document"])
+        self.assertFalse(flags["read_session_document"])
 
     def test_create_update_remove(self):
         self.svc.seed_builtins()

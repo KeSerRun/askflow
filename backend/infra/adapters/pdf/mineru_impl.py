@@ -195,7 +195,7 @@ def _strip_json_base64(work_dir: Path, img_paths: list | None = None) -> int:
 
 
 def _render_document_text(pages: list, doc_title: str = "") -> str:
-    """把 middle_json 的 pages/blocks 渲染成纯文本（供 read_full_document / 关键词检索）。
+    """把 middle_json 的 pages/blocks 渲染成纯文本（供 read_knowledge_base_document / 关键词检索）。
 
     跳过页眉/页脚/页码；标题块 → ``# 标题``；表格 → Markdown 表格；
     图/表块 → ``[图:images/img_NNNN.ext]``（有标题则 ``[图:xxxx] 标题``）。

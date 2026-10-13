@@ -196,8 +196,7 @@ const handleUpload = ({ file, onFinish, onError }) => {
 
 <style scoped>
 .input-area {
-  padding: 16px 24px 20px;
-  border-top: 1px solid var(--color-border);
+  padding: 14px 24px 18px;
   background-color: var(--color-bg-card);
   flex-shrink: 0;
 }
@@ -210,6 +209,18 @@ const handleUpload = ({ file, onFinish, onError }) => {
   max-width: 880px;
   margin: 0 auto;
   box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 20px;
+  background-color: var(--color-bg-white);
+  box-shadow: 0 2px 8px var(--color-shadow-card);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+/* 输入行获得焦点时（textarea 聚焦）提升描边 —— 用 :focus-within 覆盖整个容器 */
+.input-row:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: 0 2px 12px var(--color-primary-glow);
 }
 
 /* 左/右按钮:不参与拉伸,贴底对齐 textarea */
@@ -218,7 +229,7 @@ const handleUpload = ({ file, onFinish, onError }) => {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  padding-bottom: 3px;
+  padding-bottom: 2px;
 }
 
 /* 中间输入框:撑满剩余宽度;min-width:0 必备,否则 textarea 内容会撑破 flex 子项 */
@@ -233,7 +244,7 @@ const handleUpload = ({ file, onFinish, onError }) => {
 
 .hint {
   text-align: center;
-  margin-top: 8px;
+  margin-top: 10px;
 }
 
 /* 粘贴图片预览 */

@@ -25,7 +25,8 @@ def purge_deprecated_tools(repo) -> None:
     try:
         with engine.begin() as conn:
             conn.execute(_sa_text(
-                "DELETE FROM agent_tools WHERE name IN ('read_document_titles', 'read_section')"
+                "DELETE FROM agent_tools WHERE name IN ('read_document_titles', 'read_section', "
+                "'list_documents', 'read_full_document')"
             ))
     except Exception:
         return

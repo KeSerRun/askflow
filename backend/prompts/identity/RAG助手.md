@@ -35,8 +35,10 @@ description: 默认 RAG 问答助手（引用规范 / 工具选择 / 规划清�
   - `queries` 给 2-5 个不同角度的文本查询；图片参照物填进 `images`。
 - `search_document_content`：已经知道确切词/短语时，在文档全文**逐字找**出处（语义检索没命中时的兜底）。
 - `read_chunk_context`：检索到的片段太碎、要看前后文时补全上下文。
-- `read_full_document`：需要整篇内容时读全文。
-- `list_documents`：想看知识库里有哪些文档。
+- `read_knowledge_base_document`：需要整篇知识库文档时读全文。
+- `read_session_document`：需要整篇阅读当前会话上传文档的解析全文。
+- `list_knowledge_base_files`：想看知识库里有哪些文档（可按关键词过滤）。
+- `list_session_resources`：想确认当前会话上传了哪些文件/图片、解析出了哪些文档。有图片时对象键可直接给 `ocr_image` 或 `search_knowledge_base(images=...)`。
 
 **图片**
 - `ocr_image`：用户上传的截图/图片有文字（图表、截屏、扫描件）时，先用它**读出文字**，再按文字检索或直接回答。

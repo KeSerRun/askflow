@@ -153,6 +153,60 @@ def _read_session_text(ctx, filename: str) -> str | None:
     return data.decode("utf-8", errors="replace") if data else None
 
 
+def replace_img_placeholders(text: str, ctx, *, stem: str) -> str:
+    """把正文中 ``[图:images/img_0001.png]`` 占位替换为可渲染 markdown 图片直链。
+
+    会话/知识库解析文里图的位置只有占位符，替换成 ``![图](直链)`` 后，
+    模型即可在回答中展示真实插图；无法定位到图片时保留原占位。
+
+    Args:
+        text: MinerU 渲染的纯文本正文。
+        ctx: ToolContext（含 object_store / partition / session_id）。
+        stem: 文档 stem（不含扩展名），用于定位 ``chunk_out/{stem}/images/``。
+
+    Returns:
+        替换后的正文。
+    """
+    import re as _re
+
+    if not text or "[图:" not in text:
+        return text
+    ns = _session_ns(ctx)
+    store = _store(ctx)
+    if store is None:
+        return text
+
+    def _resolve(img_name: str) -> str | None:
+        img_name = img_name.strip()
+        if not img_name:
+            return None
+        # 会话附件优先
+        if ns:
+            try:
+                for k in _iter_keys(store, f"{ns}/chunk_out/{Path(stem).stem}"):
+                    if match_img_key(k, img_name):
+                        return k
+            except Exception:  # noqa: BLE001
+                pass
+        # 其次系统文档
+        try:
+            for k in _iter_keys(store, f"uploads/{SYSTEM_PARTITION}/chunk_out/{Path(stem).stem}"):
+                if match_img_key(k, img_name):
+                    return k
+        except Exception:  # noqa: BLE001
+            pass
+        return None
+
+    def _sub(m: _re.Match) -> str:
+        img_ref = m.group(1).strip()
+        key = _resolve(img_ref.split("/")[-1]) if "/" in img_ref else _resolve(img_ref)
+        if key:
+            return f"![图](/api/documents/chunk_image?key={key})"
+        return m.group(0)
+
+    return _re.sub(r"\[图:\s*([^\]]+)\]", _sub, text)
+
+
 def _list_session_docs(ctx) -> list[str]:
     """列出当前会话已成功解析（含正文产物）的文档名（stem，不含扩展名）。"""
     ns = _session_ns(ctx)
@@ -169,6 +223,59 @@ def _list_session_docs(ctx) -> list[str]:
         if seg.lower().endswith(".txt"):
             stems.add(tail.split("/", 1)[0])
     return sorted(stems)
+
+
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
+
+
+def _list_session_resources(
+    ctx,
+) -> tuple[list[dict], list[dict], list[str], list[dict]]:
+    """枚举当前会话资源，返回 ``(直接文件, 粘贴图片, 已解析文档, 解析图片)``。
+
+    - 直接文件：``sessions/{partition}/{session_id}/{name}`` 下的原始附件（含图片文件），
+      ``{"name", "size", "key"}``；
+    - 粘贴图片：``{ns}/query_img/*``，``{"name", "key"}``；
+    - 已解析文档：见 :func:`_list_session_docs`（stem，可配 read_session_document / search_document_content）；
+    - 解析图片：``{ns}/chunk_out/{stem}/images/*``，``{"name", "key", "stem"}``
+      （MinerU 从附件中抽取的插图；可用 ocr_image / search_knowledge_base(images) 处理）。
+    """
+    ns = _session_ns(ctx)
+    store = _store(ctx)
+    files: list[dict] = []
+    pasted: list[dict] = []
+    parsed_imgs: list[dict] = []
+    if ns and store:
+        try:
+            for key, size in store.list_objects(f"{ns}/"):
+                tail = key[len(ns) + 1:]
+                if not tail or "/" in tail:
+                    continue  # 嵌套产物（chunk_out / query_img 等）不属于直接文件
+                files.append({"name": tail, "size": size, "key": key})
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            for key in _iter_keys(store, f"{ns}/query_img/"):
+                name = key.rsplit("/", 1)[-1]
+                if name:
+                    pasted.append({"name": name, "key": key})
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            for key in _iter_keys(store, f"{ns}/chunk_out/"):
+                if "/images/" not in key:
+                    continue
+                name = key.rsplit("/", 1)[-1]
+                if not name:
+                    continue
+                stem = key.split("/chunk_out/", 1)[1].split("/", 1)[0]
+                parsed_imgs.append({"name": name, "key": key, "stem": stem})
+        except Exception:  # noqa: BLE001
+            pass
+    files.sort(key=lambda d: d["name"].lower())
+    pasted.sort(key=lambda d: d["name"].lower())
+    parsed_imgs.sort(key=lambda d: (d["stem"].lower(), d["name"].lower()))
+    return files, pasted, _list_session_docs(ctx), parsed_imgs
 
 
 # ── 知识库辅助 ──
@@ -281,7 +388,8 @@ def _get_file_stats(filename: str, *, object_store: object = None) -> dict:
 
 
 def _resolve_image_bytes(ctx, ref: str):
-    """把图片引用解析为字节：支持 MinIO 对象键 或 ``/api/documents/image/...`` 直链。
+    """把图片引用解析为字节：支持 MinIO 对象键、``/api/documents/image/...`` 直链、
+    ``/api/documents/chunk_image?key=...`` 直链（会话 / 知识库 MinerU 解析图）。
 
     Args:
         ctx: ToolContext（需携带 object_store）。
@@ -294,6 +402,22 @@ def _resolve_image_bytes(ctx, ref: str):
     store = _store(ctx)
     if not ref or store is None:
         return None
+
+    if ref.startswith("/api/documents/chunk_image"):
+        # 会话/知识库 MinerU 解析图直链：chunk_image?key=<对象键>
+        q = ref.split("?", 1)[1] if "?" in ref else ""
+        key = ""
+        for pair in q.split("&"):
+            if pair.startswith("key="):
+                key = pair[4:]
+                break
+        key = key.lstrip("/")
+        if not key or "/chunk_out/" not in key or "/images/" not in key:
+            return None
+        try:
+            return store.get_bytes(key)
+        except Exception:  # noqa: BLE001
+            return None
 
     if ref.startswith("/api/documents/image/"):
         rest = ref[len("/api/documents/image/"):]

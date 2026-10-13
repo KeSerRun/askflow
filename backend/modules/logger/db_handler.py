@@ -53,12 +53,16 @@ _attached = False
 
 
 def attach_application_db_logger(repo: object) -> DatabaseLogHandler | None:
-    """把 DB Handler 挂到 ``APPLogger``（幂等，重复调用不叠加）。"""
+    """把 DB Handler 挂到 ``APPLogger``（幂等，重复调用不叠加）。
+
+    生产（APP_ENV=production）下 DB 只存 ERROR 及以上，INFO 不入库。
+    """
     global _attached
     if _attached:
         return None
     _attached = True
     handler = DatabaseLogHandler(repo)
-    handler.setLevel(conf.log_app_level or logging.INFO)
+    _prod = str(getattr(conf, "app_env", "") or "").strip().lower() in ("production", "prod")
+    handler.setLevel(logging.ERROR if _prod else (conf.log_app_level or logging.INFO))
     logging.getLogger("APPLogger").addHandler(handler)
     return handler

@@ -11,7 +11,7 @@
 
     <template v-else-if="store.configData">
       <n-card v-for="group in groups" :key="group" :title="group" :bordered="true" size="small" style="margin-bottom: 16px">
-        <n-form label-placement="left" label-width="160" size="small">
+        <n-form label-placement="left" label-width="180" size="small">
           <n-form-item v-for="field in fieldsByGroup(group)" :key="field.key" :label="field.label">
             <!-- 多行文本（优先于 string，避免 textarea=true 被 type=string 拦截） -->
             <n-input v-if="field.textarea" v-model:value="form[field.key]" type="textarea" :rows="3" :placeholder="field.placeholder || ''" />

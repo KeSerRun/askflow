@@ -119,7 +119,6 @@ export const useAdminStore = defineStore('admin', () => {
   const dbChunks = ref({ total: 0, items: [] })
   const systemDocs = ref([])
   const systemDocsTotal = ref(0)
-  const uploadStatus = ref(null)
   // 服务器资源（仪表盘 CPU / RAM）
   const serverResources = ref(null)
 
@@ -139,6 +138,15 @@ export const useAdminStore = defineStore('admin', () => {
     const res = await apiCall(() => axios.get('/api/admin/database/system_docs', { params }))
     systemDocs.value = res.data.documents || []
     systemDocsTotal.value = res.data.total || 0
+    return res.data
+  }
+
+  const systemFiles = ref([])
+  const systemFilesTotal = ref(0)
+  async function fetchSystemFiles(params = {}) {
+    const res = await apiCall(() => axios.get('/api/admin/database/system_files', { params }))
+    systemFiles.value = res.data.files || []
+    systemFilesTotal.value = res.data.total || 0
     return res.data
   }
 
@@ -169,26 +177,9 @@ export const useAdminStore = defineStore('admin', () => {
     return res.data
   }
 
-  async function clearUploadTask(taskId) {
-    const res = await apiCall(() => axios.post(`/api/admin/database/upload/${taskId}/clean`))
-    return res.data
-  }
-
-  async function fetchUploadStatus() {
-    try {
-      const res = await axios.get('/api/admin/database/upload/status')
-      uploadStatus.value = res.data
-      return res.data
-    } catch (e) {
-      error.value = e.response?.data?.detail || e.message
-      throw e
-    }
-  }
-
   async function fetchUploadTask(taskId) {
     try {
       const res = await axios.get(`/api/admin/database/upload/task/${taskId}`)
-      uploadStatus.value = { status: res.data.status, task: res.data }
       return res.data
     } catch (e) {
       error.value = e.response?.data?.detail || e.message
@@ -199,6 +190,14 @@ export const useAdminStore = defineStore('admin', () => {
   async function deleteDocument(source) {
     const res = await apiCall(() =>
       axios.delete('/api/admin/database/delete', { params: { source } })
+    )
+    await fetchDbStats()
+    return res.data
+  }
+
+  async function deleteSystemRawFile(source) {
+    const res = await apiCall(() =>
+      axios.delete('/api/admin/database/system_file', { params: { source } })
     )
     await fetchDbStats()
     return res.data
@@ -363,10 +362,11 @@ export const useAdminStore = defineStore('admin', () => {
     healthData, healthLoading, fetchHealth,
     configData, configSchema, fetchConfig, fetchConfigSchema, updateConfig,
     usersData, fetchUsers, createUser, deleteUser, changeUserRole, resetUserPassword,
-    dbStats, dbChunks, systemDocs, systemDocsTotal, uploadStatus,
+    dbStats, dbChunks, systemDocs, systemDocsTotal,
     fetchDbStats, fetchDbChunks, fetchDbMdView, mdviewEmbed, mdviewRemove, fetchChunkParent,
-    fetchSystemDocs, uploadSystemDocs, clearUploadTask, fetchUploadStatus, fetchUploadTask,
-    deleteDocument,
+    fetchSystemDocs, fetchSystemFiles, systemFiles, systemFilesTotal,
+    uploadSystemDocs, fetchUploadTask,
+    deleteDocument, deleteSystemRawFile,
     sessionsData, fetchSessions, fetchSessionHistory, clearSessionHistory, deleteSessionAdmin,
     appLogsData, httpLogsData, fetchAppLogs, fetchHttpLogs,
     deleteAppLog, deleteHttpLog, clearAppLogs, clearHttpLogs,

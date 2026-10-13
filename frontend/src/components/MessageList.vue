@@ -152,12 +152,13 @@ defineExpose({ scrollToBottom })
 <style scoped>
 .messages-area {
   flex: 1;
-  padding: 32px 24px;
+  padding: 28px 24px 48px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 22px;
   scroll-behavior: smooth;
+  scrollbar-gutter: stable;
 }
 
 .welcome {
@@ -211,7 +212,9 @@ defineExpose({ scrollToBottom })
 .message {
   display: flex;
   gap: 12px;
-  max-width: 100%;
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
   animation: messageIn 0.25s ease-out;
 }
 
@@ -236,12 +239,14 @@ defineExpose({ scrollToBottom })
 .message.user .bubble {
   background-color: var(--color-primary-bg);
   border-bottom-right-radius: 4px;
+  transition: background-color 0.2s ease;
 }
 
 .message.ai .bubble {
   background-color: var(--color-bg-card);
   border: 1px solid var(--color-border);
   border-bottom-left-radius: 4px;
+  box-shadow: 0 1px 3px var(--color-shadow-card);
 }
 
 .user-content {

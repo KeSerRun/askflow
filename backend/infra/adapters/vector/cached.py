@@ -75,11 +75,6 @@ class CachedVectorStore:
         self._bump()
         return result
 
-    def delete_documents_by_sources(self, sources):
-        result = self._store.delete_documents_by_sources(sources)
-        self._bump()
-        return result
-
     def delete_all(self):
         result = self._store.delete_all()
         self._bump()

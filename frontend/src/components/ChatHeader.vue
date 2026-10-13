@@ -113,6 +113,7 @@ defineEmits(['open-doc-manager', 'logout', 'toggle-sidebar'])
   justify-content: space-between;
   align-items: center;
   background-color: var(--color-bg-card);
+  box-shadow: 0 1px 4px var(--color-shadow-card);
   z-index: 10;
   flex-shrink: 0;
   -webkit-user-select: none !important;

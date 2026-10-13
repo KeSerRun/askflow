@@ -321,9 +321,6 @@ class MilvusVectorStore:
     def get_documents(self) -> List[str]:
         return self.get_sources()
 
-    def delete_documents_by_sources(self, sources) -> None:
-        self.delete_by_sources(list(sources))
-
     def store_documents_from_dir(self, directory) -> None:
         from infra.adapters.pdf.document_loader import process_documents_from_dir
 

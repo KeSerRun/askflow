@@ -22,7 +22,11 @@ from starlette.middleware.gzip import GZipMiddleware
 
 from core.concurrency import to_thread_safe
 from core.security import decode_access_token, extract_bearer
+from config import conf
 from infra.util.logger import log_http
+
+# 生产环境：调用记录只落"有问题"的请求（HTTP >=300），普通 2xx 不入库
+_IS_PROD = str(getattr(conf, "app_env", "") or "").strip().lower() in ("production", "prod")
 
 
 class LogRequestsMiddleware(BaseHTTPMiddleware):
@@ -57,6 +61,9 @@ class CallRecordMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
         # 仅记录 API 调用，避免静态资源/页面请求刷爆记录表
         if self._service is not None and request.url.path.startswith("/api"):
+            # 生产：只落 HTTP >=300 的请求（错误/异常），普通 2xx 不入库
+            if _IS_PROD and response.status_code < 300:
+                return response
             await to_thread_safe(
                 self._service.record,
                 request.method, request.url.path, response.status_code,

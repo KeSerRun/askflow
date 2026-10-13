@@ -51,7 +51,7 @@ description: 规划工作流 —— 拆解任务 → set_todolist 建清单 → 
 
 1. 每轮调用 1-3 个与该步骤相关的工具（不要一次全触发）。
 2. 该步骤完成 → 立刻 `check_todo(id)` 勾上（**包含第一步**）。
-3. 需要实时数据 → `web_search`；知识库 → `search_knowledge_base`（多角度 queries，必要时 `mode='image'`/`'text'`）；确找字面词 → `search_document_content`；截图文字 → `ocr_image`；碎片段 → `read_chunk_context`；整篇 → `read_full_document`。
+3. 需要实时数据 → `web_search`；知识库 → `search_knowledge_base`（多角度 queries，必要时 `mode='image'`/`'text'`）；确找字面词 → `search_document_content`；截图文字 → `ocr_image`；碎片段 → `read_chunk_context`；整篇 → `read_knowledge_base_document`。
 4. 全部勾选完成后，`check_todo` 会提示"全部完成"，进入下一步汇总。
 
 > ⚠️ 勾选要即时、逐项进行，不允许攒到最后一起勾或跳过某一步。
@@ -85,7 +85,7 @@ description: 规划工作流 —— 拆解任务 → set_todolist 建清单 → 
 | `ocr_image` | 读取截图/图片中的文字 |
 | `web_search` | 联网搜索实时信息 |
 | `read_url` | 阅读网页全文 |
-| `read_chunk_context` / `read_full_document` / `list_documents` | 补全上下文 / 读全文 / 文档清单 |
+| `read_chunk_context` / `read_knowledge_base_document` / `list_knowledge_base_files` | 补全上下文 / 读全文 / 文档清单 |
 | `read_workflow` | 按需读取其它工作流（DeepResearch 等） |
 | `set_goal` / `complete_goal` | 跨轮次持续目标 |
 | `ask_user_for_clarification` | 需求不明时澄清 |

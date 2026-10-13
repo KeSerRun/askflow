@@ -161,6 +161,36 @@ def serve_query_image(
     return views.inline_bytes(data, name)
 
 
+@router.get("/documents/chunk_image")
+def serve_chunk_image(
+    request: Request,
+    key: str = Query(...),
+    token: str = Query(None),
+):
+    """提供 MinerU 解析图片（会话附件或知识库 ``chunk_out/.../images/``）；仅属主或管理员可读会话图。
+
+    Raises:
+        HTTPException 400: key 非法。
+        HTTPException 401: token 无效。
+        HTTPException 403: 非本人/非管理员。
+        HTTPException 404: 图片不存在。
+    """
+    payload = require_media_auth(request, token)
+    key = str(key or "").lstrip("/")
+    m = _re.match(r"^sessions/(\d+)/", key)
+    if m:
+        owner = int(payload.get("user_id") or 0)
+        if owner != int(m.group(1)) and payload.get("role") != "admin":
+            raise HTTPException(status_code=403, detail="Forbidden")
+    elif not key.startswith("uploads/"):
+        raise HTTPException(status_code=400, detail="非法图片键")
+    found = document_service.read_chunk_image(key)
+    if found is None:
+        raise HTTPException(status_code=404, detail="image not found")
+    data, _media_type, name = found
+    return views.inline_bytes(data, name)
+
+
 @router.get("/documents/image/{doc_stem}/{img_name:path}")
 def serve_mineru_image(
     request: Request,

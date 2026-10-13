@@ -96,14 +96,10 @@ _APP_ENV = str(getattr(conf, "app_env", "") or "").strip().lower()
 _IS_PROD = _APP_ENV in ("production", "prod")
 
 
-def _level(name) -> int:
-    text = str(name or "").strip()
-    return logging.getLevelName(text.upper()) if text else logging.INFO
-
-
 _app_level = "ERROR" if _IS_PROD else (conf.log_app_level or "INFO")
 _console_level = "ERROR" if _IS_PROD else (conf.log_console_level or "DEBUG")
-_http_level = "ERROR" if _IS_PROD else (conf.log_http_level or "INFO")
+# http 级别保持按配置（INFO）；生产"只写 >=300"在 log_http 内部按状态过滤
+_http_level = conf.log_http_level or "INFO"
 
 # ── 应用日志器 ────────────────────────────────────
 logger = logging.getLogger("APPLogger")
@@ -124,19 +120,22 @@ logger.addHandler(_fh)
 logger.addHandler(_ch)
 
 
-# ── LLM 输入日志（生产不落盘，避免敏感输入入库） ──
+# ── LLM 输入日志（生产完全不落盘，避免敏感输入入库） ──
 _llm_logger = logging.getLogger("LLMInputLogger")
-_llm_logger.setLevel(logging.CRITICAL if _IS_PROD else logging.INFO)
+_llm_logger.setLevel(logging.INFO)
 _llm_logger.propagate = False
 _lh = _rotating_handler(
-    "input.log", logging.CRITICAL if _IS_PROD else logging.INFO,
+    "input.log", logging.INFO,
     logging.Formatter(
         "=== %(asctime)s %(message)s ===\n%(msg_json)s\n",
         datefmt="%Y-%m-%dT%H:%M:%S",
     ),
     conf.log_max_mb, conf.log_backup_count,
 )
-_llm_logger.addHandler(_lh)
+if not _IS_PROD:
+    _llm_logger.addHandler(_lh)
+else:
+    _llm_logger.handlers.clear()   # 生产不挂 handler，log_llm_input 无输出
 
 
 # ── HTTP 请求日志器 ──────────────────────────────
@@ -156,7 +155,12 @@ _http_logger.addHandler(_hh)
 # ── 公共日志接口 ────────────────────────────────
 def log_http(method: str, path: str, status: int, username: str = "-",
              request_id: str = "", elapsed_ms: int | None = None):
-    """记录 HTTP 请求日志（可带 request_id / 耗时，便于链路追踪）。"""
+    """记录 HTTP 请求日志（可带 request_id / 耗时，便于链路追踪）。
+
+    生产环境只记录 ``status >= 300`` 的请求（错误类），普通 2xx 不入 http.log。
+    """
+    if _IS_PROD and int(status or 0) < 300:
+        return
     rid = f"[{request_id[:8]}] " if request_id else ""
     cost = f"{elapsed_ms:>5}ms  " if elapsed_ms is not None else ""
     _http_logger.info(f"{rid}{method:6s} {status}  {cost}{username:12s}  {path}")
