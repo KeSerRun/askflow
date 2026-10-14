@@ -307,6 +307,8 @@ services:
       - "${SEARXNG_PORT:-8888}:8080"
     volumes:
       - ./data/searxng:/etc/searxng
+      # 运行缓存（镜像声明了 VOLUME /var/cache/searxng）：显式 bind 到 data，避免自动生成匿名卷
+      - ./data/searxng/cache:/var/cache/searxng
     environment:
       SEARXNG_BASE_URL: "http://localhost:${SEARXNG_PORT:-8888}/"
     # 限流 / JSON 格式等行为在 ./data/searxng/settings.yml 中配置

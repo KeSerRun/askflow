@@ -62,6 +62,7 @@ register_exception_handlers(app)
 register_middlewares(
     app,
     request_log_service=get_container().get("request_log_service"),
+    request_stats=get_container().get("request_stats"),
 )
 
 

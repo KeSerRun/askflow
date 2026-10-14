@@ -29,6 +29,7 @@ from modules.database import entity as _db_entity  # noqa: F401 注册 ORM 模�
 from modules.database.service import DatabaseService
 from modules.logger.db_handler import attach_application_db_logger
 from modules.logger.service import LogService, RequestLogService
+from modules.logger.stats import RequestStats
 from modules.document.service import DocumentService
 from modules.history import HistoryService
 from modules.health.service import HealthService
@@ -176,6 +177,7 @@ def build_container(cfg: AppConfig) -> Container:
     )
     dashboard_service = DashboardService(user_service, vector_store, repo)
     request_log_service = RequestLogService(repo)
+    request_stats = RequestStats(cache)   # 请求统计：缓存累加，独立于 request_logs 与环境
     database_service = DatabaseService(
         vector_store, document_service,
         object_store=object_store,
@@ -195,6 +197,7 @@ def build_container(cfg: AppConfig) -> Container:
         "history_service": history_service,
         "dashboard_service": dashboard_service,
         "request_log_service": request_log_service,
+        "request_stats": request_stats,
         "database_service": database_service,
         "log_service": log_service,
         "tool_service": tool_service,

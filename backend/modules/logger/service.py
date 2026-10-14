@@ -3,18 +3,16 @@
 - ``LogService``：
   - ``app_logs``    应用日志（APPLogger 的数据库镜像）；
   - ``request_logs`` HTTP 调用记录（http 日志的数据库形态）。
-- ``RequestLogService``：HTTP 调用写入 + 聚合。
+- ``RequestLogService``：HTTP 调用明细写入。
+  （请求统计的累加/快照见 ``modules.logger.stats.RequestStats``，不在此处、不查表。）
 """
 
 from __future__ import annotations
 
-import time
 from datetime import datetime
 
 from core.pagination import paginate_query
 from .entity import RequestLog
-
-_HTTP_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD")
 
 
 class LogService:
@@ -118,7 +116,7 @@ class LogService:
 
 
 class RequestLogService:
-    """HTTP 调用记录用例：写入 + 聚合统计（通用仓储的 request_logs 表）。"""
+    """HTTP 调用明细用例：写入 request_logs（统计见 ``modules.logger.stats.RequestStats``）。"""
 
     def __init__(self, repo: object):
         """初始化。
@@ -127,7 +125,6 @@ class RequestLogService:
             repo: 通用仓储（collection="request_logs"，返回 RequestLog 实体）。
         """
         self._repo = repo
-        self._start_time = time.time()
 
     def record(self, method: str, path: str, status_code: int,
                username: str | None = None, user_id: int | None = None,
@@ -144,18 +141,3 @@ class RequestLogService:
             latency_ms=latency_ms,
             created_at=datetime.now().isoformat(timespec="seconds"),
         ))
-
-    def stats(self) -> dict:
-        """聚合统计（供仪表盘）：总数 / 错误数 / 按方法分类 / 运行时长。"""
-        by_method: dict[str, int] = {}
-        for m in _HTTP_METHODS:
-            c = self._repo.count("request_logs", {"method": m})
-            if c:
-                by_method[m] = c
-        return {
-            "total_requests": self._repo.count("request_logs"),
-            "total_errors": self._repo.count("request_logs", {"is_error": True}),
-            "by_method": by_method,
-            "start_time": self._start_time,
-            "uptime_seconds": int(time.time() - self._start_time),
-        }

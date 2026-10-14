@@ -47,30 +47,39 @@ class LogRequestsMiddleware(BaseHTTPMiddleware):
 class CallRecordMiddleware(BaseHTTPMiddleware):
     """调用记录中间件：只负责把 API 调用落库（供仪表盘统计）。"""
 
-    def __init__(self, app, service=None, **kwargs):
+    def __init__(self, app, service=None, stats=None, **kwargs):
         """初始化。
 
         Args:
             app: 下游 ASGI 应用（Starlette 注入）。
-            service: ``RequestLogService``（可为 None，则跳过记录）。
+            service: ``RequestLogService``（可为 None，则跳过明细记录）。
+            stats: ``RequestStats``（可为 None，则跳过统计累加）。
         """
         super().__init__(app, **kwargs)
         self._service = service
+        self._stats = stats
 
     async def dispatch(self, request, call_next):
         response = await call_next(request)
-        # 仅记录 API 调用，避免静态资源/页面请求刷爆记录表
-        if self._service is not None and request.url.path.startswith("/api"):
-            # 生产：只落 HTTP >=300 的请求（错误/异常），普通 2xx 不入库
-            if _IS_PROD and response.status_code < 300:
-                return response
-            await to_thread_safe(
-                self._service.record,
-                request.method, request.url.path, response.status_code,
-                getattr(request.state, "username", "-"),
-                user_id=getattr(request.state, "user_id", None),
-                latency_ms=getattr(request.state, "elapsed_ms", None), tag="call-record",
-            )
+        # 仅处理 API 调用，避免静态资源/页面请求刷爆记录/统计
+        if request.url.path.startswith("/api"):
+            # 统计：全量累加（不受环境/状态码限制，缓存内 O(1)）
+            if self._stats is not None:
+                await to_thread_safe(
+                    self._stats.incr,
+                    request.method, response.status_code, tag="req-stats",
+                )
+            # 明细：落 request_logs（生产只记 >=300，见 _IS_PROD）
+            if self._service is not None:
+                if _IS_PROD and response.status_code < 300:
+                    return response
+                await to_thread_safe(
+                    self._service.record,
+                    request.method, request.url.path, response.status_code,
+                    getattr(request.state, "username", "-"),
+                    user_id=getattr(request.state, "user_id", None),
+                    latency_ms=getattr(request.state, "elapsed_ms", None), tag="call-record",
+                )
         return response
 
 
@@ -141,14 +150,15 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
-def register_middlewares(app, request_log_service=None) -> None:
+def register_middlewares(app, request_log_service=None, request_stats=None) -> None:
     """集中注册 HTTP 中间件。
 
     注册由内到外：CORS → 耗时 → GZip → 调用记录 → 请求日志 → 安全头 → 会话 → 身份 → RequestId。
 
     Args:
         app: FastAPI 应用。
-        request_log_service: 调用记录用例（落库）；为 None 时不记录。
+        request_log_service: 调用明细用例（落 request_logs）；为 None 时不记录明细。
+        request_stats: 请求统计用例（缓存累加）；为 None 时不统计。
     """
     app.add_middleware(
         CORSMiddleware,
@@ -159,7 +169,7 @@ def register_middlewares(app, request_log_service=None) -> None:
     )
     app.add_middleware(TimingMiddleware)
     app.add_middleware(GZipMiddleware, minimum_size=1024)
-    app.add_middleware(CallRecordMiddleware, service=request_log_service)
+    app.add_middleware(CallRecordMiddleware, service=request_log_service, stats=request_stats)
     app.add_middleware(LogRequestsMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(SessionMiddleware)
