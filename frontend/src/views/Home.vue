@@ -495,6 +495,128 @@ const throttleScroll = () => {
 let lastProcessedLength = 0
 let sseBuffer = ''
 
+// ── SSE 流式事件处理（发送 / 续答复用）──
+let sseCtx = null   // { aiIndex, content, reasoning, version, chunk, reasoningDirty }
+
+function beginSse(aiIndex) {
+  sseBuffer = ''
+  lastProcessedLength = 0
+  sseCtx = { aiIndex, content: '', reasoning: '', version: 0, chunk: '', reasoningDirty: false }
+  return sseCtx
+}
+
+function flushSse(force = false) {
+  const ctx = sseCtx
+  if (!ctx) return
+  if (ctx.chunk) {
+    ctx.content += ctx.chunk
+    ctx.chunk = ''
+    ctx.version++
+  }
+  // 正文或有新的思考内容时都刷新（否则纯思考阶段 version 不增长，思考过程不会流式显示）
+  if (ctx.version || ctx.reasoningDirty || force) {
+    ctx.reasoningDirty = false
+    messages.value[ctx.aiIndex] = {
+      role: 'ai', content: ctx.content, reasoning: ctx.reasoning, _v: ctx.version,
+    }
+    throttleScroll()
+  }
+}
+
+function applySseContent(content) {
+  const ctx = sseCtx
+  if (!ctx) return
+  if (typeof content === 'string') { ctx.chunk += content; return }   // 旧格式纯字符串 token
+  if (typeof content !== 'object' || !content) return
+
+  if (content.type === 'status') {
+    const label = statusLabels[content.status]
+    if (content.status === 'thinking' || content.status === 'calling_tool') {
+      agentStatus.value = {
+        visible: true,
+        text: typeof label === 'function' ? label(content) : (label || '处理中…'),
+      }
+    } else if (content.status === 'tool_result') {
+      const summary = typeof label === 'function' ? label(content) : ''
+      agentStatus.value = summary ? { visible: true, text: summary } : { visible: false, text: '' }
+    } else if (content.status === 'ask_user') {
+      clarification.value = {
+        question: content.question || '',
+        options: Array.isArray(content.options) ? content.options : [],
+      }
+      clarifChoice.value = ''
+      clarifCustom.value = ''
+      clarifVisible.value = true
+    } else if (content.status === 'todolist') {
+      todolistItems.value = Array.isArray(content.items) ? content.items : []
+    } else if (content.status === 'cancelled') {
+      const cancelMsg = { role: 'ai', content: '', _key: nextMsgKey(), isCancelled: true }
+      messages.value[ctx.aiIndex]
+        ? Object.assign(messages.value[ctx.aiIndex], cancelMsg)
+        : messages.value.push(cancelMsg)
+      agentStatus.value = { visible: false, text: '' }
+    }
+    return
+  }
+  if (content.type === 'token') {
+    agentStatus.value = { visible: false, text: '' }
+    ctx.chunk += content.text || ''
+    return
+  }
+  if (content.type === 'reasoning') {
+    ctx.reasoning += content.text || ''
+    ctx.reasoningDirty = true
+    return   // 交由本次 download 的收尾 flushSse 统一刷新
+  }
+  if (content.type === 'context') {
+    const used = Number(content.used_chars) || 0
+    const win = Number(content.window_chars) || 0
+    contextUsage.value = { used, window: win, pct: win ? Math.round((used / win) * 100) : 0 }
+  }
+}
+
+// axios onDownloadProgress 处理器：增量解析 SSE（只处理 \n\n 结束的完整事件）
+function sseDownloadHandler() {
+  return (progressEvent) => {
+    const fullText = progressEvent.event.target.responseText || ''
+    const newText = fullText.slice(lastProcessedLength)
+    if (!newText) return
+    lastProcessedLength = fullText.length
+    sseBuffer += newText
+    const events = sseBuffer.split('\n\n')
+    sseBuffer = events.pop() || ''
+    for (const event of events) {
+      for (const line of event.split('\n')) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data:')) continue
+        const raw = trimmed.slice(5)
+        if (!raw || raw === '[DONE]') continue
+        let content
+        try { content = JSON.parse(raw) } catch { content = raw }
+        if (!content) continue
+        applySseContent(content)
+      }
+    }
+    flushSse(false)
+  }
+}
+
+// 收尾：任务清单收纳进本轮 AI 消息 + 落定最终内容
+function finalizeSse() {
+  const ctx = sseCtx
+  if (ctx && todolistItems.value && todolistItems.value.length) {
+    const allDone = todolistItems.value.every(it => it.done)
+    const mark = allDone ? '✅' : '📋'
+    ctx.content += `\n\n---\n${mark} 任务清单（${allDone ? '全部完成' : '未全部完成'}）\n` +
+      todolistItems.value.map(it => `- ${it.done ? '[x]' : '[ ]'} ${it.text}`).join('\n')
+    ctx.version++
+    todolistItems.value = []
+  }
+  flushSse(true)
+  sseBuffer = ''
+  sseCtx = null
+}
+
 // Agent 状态追踪
 const agentStatus = ref({ visible: false, text: '' })
 const todolistItems = ref([])   // 规划期任务清单（set_todolist / check_todo 事件驱动）
@@ -530,35 +652,41 @@ async function submitClarification() {
   clarifVisible.value = false
   clarification.value = null
   messages.value.push({ role: 'user', content: answer, _key: nextMsgKey() })
-  const aiKey = nextMsgKey()
-  messages.value.push({ role: 'ai', content: '', reasoning: '', _v: 0, _key: aiKey })
+  messages.value.push({ role: 'ai', content: '', reasoning: '', _v: 0, _key: nextMsgKey() })
   const aiIdx = messages.value.length - 1
   clarifSubmitting.value = true
   agentStatus.value = { visible: true, text: '正在继续生成…' }
   isLoading.value = true
+  contextUsage.value = null
+  beginSse(aiIdx)
   throttleScroll()
 
   try {
-    const resp = await axios.post('/api/query/resume', {
-      session_id: currentSessionId.value,
-      answer,
-    })
-    const finalAnswer = (resp.data && resp.data.answer) || '(未获得继续结果)'
-    messages.value[aiIdx] = { role: 'ai', content: finalAnswer, reasoning: '', _v: 1, _key: aiKey }
-    throttleScroll()
+    // 续跑同样走流式（stream: true），与 /api/query 共用 SSE 处理
+    await axios.post(
+      '/api/query/resume',
+      { session_id: currentSessionId.value, answer, stream: true },
+      {
+        headers: { 'Content-Type': 'application/json' },
+        responseType: 'text',
+        onDownloadProgress: sseDownloadHandler(),
+      },
+    )
   } catch (e) {
+    const ctx = sseCtx
     const errMsg = (e && e.response && e.response.data && e.response.data.detail) || (e && e.message) || '未知错误'
-    messages.value[aiIdx] = {
-      role: 'ai',
-      content: `*[继续生成失败：${errMsg}]*`,
-      reasoning: '',
-      _v: 1,
-      _key: aiKey,
+    if (ctx) {
+      ctx.content += `\n\n*[继续生成失败：${errMsg}]*`
+      ctx.version++
+      messages.value[ctx.aiIndex] = {
+        role: 'ai', content: ctx.content, reasoning: ctx.reasoning, _v: ctx.version,
+      }
     }
   } finally {
-    clarifSubmitting.value = false
-    isLoading.value = false
     agentStatus.value = { visible: false, text: '' }
+    isLoading.value = false
+    clarifSubmitting.value = false
+    finalizeSse()
     nextTick(() => messageListRef.value?.scrollToBottom())
   }
 }
@@ -671,12 +799,8 @@ const sendQuestion = async (payload) => {
   // 立即推入占位 AI 消息，后续通过索引替换来更新（触发 Vue 数组响应式）
   messages.value.push({ role: 'ai', content: '', reasoning: '', _v: 0, _key: nextMsgKey() })
   const aiIndex = messages.value.length - 1
-  let aiContent = ''
-  let aiReasoning = ''
-  let aiVersion = 0
-  sseBuffer = ''
-  lastProcessedLength = 0
   contextUsage.value = null
+  beginSse(aiIndex)
 
   try {
     await axios.post(
@@ -685,160 +809,22 @@ const sendQuestion = async (payload) => {
       {
         headers: { 'Content-Type': 'application/json' },
         responseType: 'text',
-        onDownloadProgress: (progressEvent) => {
-          const fullText = progressEvent.event.target.responseText || ''
-          const newText = fullText.slice(lastProcessedLength)
-          if (!newText) return
-          lastProcessedLength = fullText.length
-
-          // SSE buffer：只处理以 \n\n 结尾的完整事件，碎片留到下次
-          sseBuffer += newText
-          const events = sseBuffer.split('\n\n')
-          sseBuffer = events.pop() || ''
-
-          let chunk = ''
-          for (const event of events) {
-            const lines = event.split('\n')
-            for (const line of lines) {
-              const trimmed = line.trim()
-              if (!trimmed.startsWith('data:')) continue
-              const raw = trimmed.slice(5)
-              if (!raw || raw === '[DONE]') continue
-              // 后端用 JSON 编码事件，这里解码
-              let content
-              try {
-                content = JSON.parse(raw)
-              } catch {
-                // 兼容旧格式（如 [DONE] 等非 JSON）
-                content = raw
-              }
-              if (!content) continue
-
-              // 处理状态事件（tool call / thinking）
-              if (typeof content === 'object') {
-                if (content.type === 'status') {
-                  const label = statusLabels[content.status]
-                  if (content.status === 'thinking' || content.status === 'calling_tool') {
-                    agentStatus.value = {
-                      visible: true,
-                      text: typeof label === 'function' ? label(content) : (label || '处理中…'),
-                    }
-                  } else if (content.status === 'tool_result') {
-                    // 显示结果摘要（如 "检索完成，找到 5 条结果"），下次 thinking/calling_tool 会覆盖
-                    const summary = typeof label === 'function' ? label(content) : ''
-                    if (summary) {
-                      agentStatus.value = { visible: true, text: summary }
-                    } else {
-                      agentStatus.value = { visible: false, text: '' }
-                    }
-                  } else if (content.status === 'ask_user') {
-                    // 澄清选择框：展示模型问题与选项，用户提交后走 resume 继续
-                    clarification.value = {
-                      question: content.question || '',
-                      options: Array.isArray(content.options) ? content.options : [],
-                    }
-                    clarifChoice.value = ''
-                    clarifCustom.value = ''
-                    clarifVisible.value = true
-                  } else if (content.status === 'todolist') {
-                    // 任务清单：实时覆盖（助手每完成一项会广播最新清单）
-                    todolistItems.value = Array.isArray(content.items) ? content.items : []
-                  } else if (content.status === 'cancelled') {
-                    // 中断事件：在消息列表中插入中断提示
-                    const cancelMsg = {
-                      role: 'ai',
-                      content: '',
-                      _key: nextMsgKey(),
-                      isCancelled: true,
-                    }
-                    messages.value[aiIndex] ?
-                      Object.assign(messages.value[aiIndex], cancelMsg) :
-                      messages.value.push(cancelMsg)
-                    agentStatus.value = { visible: false, text: '' }
-                  }
-                  continue
-                }
-                if (content.type === 'token') {
-                  // 首个 token 到达时清除状态
-                  agentStatus.value = { visible: false, text: '' }
-                  chunk += content.text || ''
-                  continue
-                }
-                if (content.type === 'reasoning') {
-                  // 推理过程（思考链），单独累积，不混入主回答
-                  aiReasoning += (content.text || '')
-                  messages.value[aiIndex] = {
-                    role: 'ai',
-                    content: aiContent,
-                    reasoning: aiReasoning,
-                    _v: aiVersion,
-                  }
-                  throttleScroll()
-                  continue
-                }
-                if (content.type === 'context') {
-                  // 上下文使用情况（当前上下文 / 最大窗口），仅前端展示
-                  const used = Number(content.used_chars) || 0
-                  const window = Number(content.window_chars) || 0
-                  contextUsage.value = {
-                    used,
-                    window,
-                    pct: window ? Math.round((used / window) * 100) : 0,
-                  }
-                  continue
-                }
-              }
-
-              // 旧格式（纯字符串 token）
-              if (typeof content === 'string') {
-                chunk += content
-              }
-            }
-          }
-
-          if (chunk) {
-            aiContent += chunk
-            aiVersion++
-            // 索引替换触发 Vue 数组响应式
-            messages.value[aiIndex] = {
-              role: 'ai',
-              content: aiContent,
-              reasoning: aiReasoning,
-              _v: aiVersion,
-            }
-            throttleScroll()
-          }
-        },
+        onDownloadProgress: sseDownloadHandler(),
       }
     )
   } catch (error) {
-    aiContent += '\n\n*[系统错误，请重试]*'
-    aiVersion++
-    messages.value[aiIndex] = {
-      role: 'ai',
-      content: aiContent,
-      reasoning: aiReasoning,
-      _v: aiVersion,
+    const ctx = sseCtx
+    if (ctx) {
+      ctx.content += '\n\n*[系统错误，请重试]*'
+      ctx.version++
+      messages.value[ctx.aiIndex] = {
+        role: 'ai', content: ctx.content, reasoning: ctx.reasoning, _v: ctx.version,
+      }
     }
     message.error('请求失败，请重试')
   } finally {
     isLoading.value = false
-    sseBuffer = ''
-    // 任务清单完成后：收纳进本轮 AI 消息，悬浮面板随之消失
-    if (todolistItems.value && todolistItems.value.length) {
-      const allDone = todolistItems.value.every(it => it.done)
-      const mark = allDone ? '✅' : '📋'
-      aiContent += `\n\n---\n${mark} 任务清单（${allDone ? '全部完成' : '未全部完成'}）\n` +
-        todolistItems.value.map(it => `- ${it.done ? '[x]' : '[ ]'} ${it.text}`).join('\n')
-      aiVersion++
-      messages.value[aiIndex] = {
-        role: 'ai',
-        content: aiContent,
-        reasoning: aiReasoning,
-        _v: aiVersion,
-      }
-      todolistItems.value = []
-    }
+    finalizeSse()
     nextTick(() => messageListRef.value?.scrollToBottom())
   }
 }

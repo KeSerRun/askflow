@@ -5,6 +5,13 @@
 启动后端 HTTP 服务；具体接口在 ``modules/*/controller``，横切在 ``core``。
 """
 
+# 禁用三方库（pymilvus 等）导入时的 python-dotenv 加载：它们会把 .env 灌进
+# os.environ，而本项目取值链是 os.environ > .env，会因此遮蔽后台对 .env 的修改
+# （该污染还会随 os.execv 重启被继承）。必须早于任何相关三方库导入。
+import os as _os
+
+_os.environ.setdefault("PYTHON_DOTENV_DISABLED", "1")
+
 # 设置程序根目录，确保跨工作目录可运行
 from config.paths import setpath
 
@@ -106,6 +113,28 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
+def _wait_bind_free(port: int, timeout: float = 30.0) -> None:
+    """等待端口可绑定后再启动服务。
+
+    Windows 上「重启后端服务」（``os.execv``）会让新旧进程短暂并存，新进程可能
+    先于旧进程释放端口而抢绑失败（EADDRINUSE）。这里轮询直到端口释放。
+    干净启动时端口本就空闲，首次探测即通过，无额外开销。
+    """
+    import socket
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            probe.bind(("0.0.0.0", port))
+            return
+        except OSError:
+            time.sleep(0.3)
+        finally:
+            probe.close()
+
+
 if __name__ == "__main__":
     import os as _os2
 
@@ -114,6 +143,7 @@ if __name__ == "__main__":
     # 端口：优先 PORT 环境变量（便于换端口解决浏览器权限记录），默认 11000
     _port = int(_os2.environ.get("PORT", "11000"))
     logger.info(f"主页地址: http://127.0.0.1:{_port} (Press CTRL+RIGHT-CLICK to enter)")
+    _wait_bind_free(_port)
     _workers = int(conf.app_workers or 1)
     if _workers > 1:
         uvicorn.run("app:app", host="0.0.0.0", port=_port, workers=_workers)

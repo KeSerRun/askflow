@@ -36,3 +36,5 @@ class ResumeBody(BaseModel):
     # 澄清问题的用户回答（选择框所选 / 自定义文本），续跑前注入为一条 user 消息
     answer: str | None = None
     extra_iterations: int = Field(default=0, ge=0, le=20)
+    # True → 返回 SSE 事件流（与 /api/query 一致）；False → 返回 {"answer": str}
+    stream: bool = False

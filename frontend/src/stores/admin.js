@@ -81,6 +81,11 @@ export const useAdminStore = defineStore('admin', () => {
     return res.data
   }
 
+  async function restartBackend() {
+    const res = await apiCall(() => axios.post('/api/admin/restart'))
+    return res.data
+  }
+
   // --- 用户管理 ---
   const usersData = ref({ total: 0, items: [] })
 
@@ -360,7 +365,7 @@ export const useAdminStore = defineStore('admin', () => {
     dashboardData, fetchDashboard,
     serverResources, fetchServerResources,
     healthData, healthLoading, fetchHealth,
-    configData, configSchema, fetchConfig, fetchConfigSchema, updateConfig,
+    configData, configSchema, fetchConfig, fetchConfigSchema, updateConfig, restartBackend,
     usersData, fetchUsers, createUser, deleteUser, changeUserRole, resetUserPassword,
     dbStats, dbChunks, systemDocs, systemDocsTotal,
     fetchDbStats, fetchDbChunks, fetchDbMdView, mdviewEmbed, mdviewRemove, fetchChunkParent,

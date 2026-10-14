@@ -135,6 +135,14 @@ class ToolLoop:
             getattr(self.cfg, "agent_max_output_chars", 8192),
         )
 
+    @property
+    def _temperature(self) -> float:
+        """采样温度：配置缺失/非法时回退 0.3（低温更利于工具调用稳定）。"""
+        try:
+            return float(getattr(self.cfg, "llm_temperature", None))
+        except (TypeError, ValueError):
+            return 0.3
+
     def _build_system_message(self, style=None, workflow=None) -> str:
         """构造 system message：identity + 日期 + 风格 + 工作流。"""
         parts = [self.system_context.identity or ""]
@@ -192,7 +200,7 @@ class ToolLoop:
         return dict(
             tools=tools,
             tool_choice=tool_choice,
-            temperature=0.7,
+            temperature=self._temperature,
             max_tokens=self._max_output_tokens,
             reasoning_effort=getattr(self.cfg, "llm_reasoning_effort", None),
         )
@@ -574,11 +582,8 @@ class ToolLoop:
     ):
         """生成答案的顶层入口（非流式返回字符串；流式返回事件生成器）。
 
-        配置热重载 → 构造初始图状态 → invoke / stream。
+        构造初始图状态 → invoke / stream。
         """
-        reload = getattr(self.cfg, "reload_if_changed", None)
-        if callable(reload):
-            reload()
         from .tools import registry as _reg
         _reg.reset_external_lookup_counts()
         logger.debug(f"收到用户查询: {query} (style={style}), (workflow={workflow})")

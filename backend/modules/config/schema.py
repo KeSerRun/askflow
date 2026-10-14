@@ -41,6 +41,7 @@ LABEL_MAP: dict[str, str] = {
     "LLM_BASE_URL": "对话模型 API 地址",
     "LLM_MODEL": "对话模型名称",
     "LLM_REASONING_EFFORT": "推理力度（low/medium/high）",
+    "LLM_TEMPERATURE": "采样温度（越低越稳定）",
     "LLM_TIMEOUT": "LLM 请求超时（秒）",
     "LLM_MAX_RETRIES": "LLM 最大重试次数",
     "LLM_HEALTH_URL": "LLM 健康检查地址",

@@ -2,7 +2,7 @@
   <div class="settings-page">
     <n-h2>系统设置</n-h2>
     <n-text depth="3" style="display:block; margin-bottom: 20px">
-      配置保存到数据库（动态生效，覆盖 .env）；按分组展示，敏感字段已脱敏。
+      配置保存到 backend/.env；改动需点「重启后端服务」后生效。按分组展示，敏感字段已脱敏。
     </n-text>
 
     <div v-if="store.loading && !store.configData" class="loading-center">
@@ -33,6 +33,7 @@
 
       <n-space style="margin-top: 20px">
         <n-button type="primary" :loading="store.loading" @click="handleSave">保存设置</n-button>
+        <n-button type="warning" secondary :loading="restarting" :disabled="store.loading" @click="handleRestart">重启后端服务</n-button>
         <n-button @click="handleReset">重置</n-button>
       </n-space>
     </template>
@@ -46,8 +47,9 @@
 </template>
 
 <script setup>
-import { computed, reactive, onMounted } from 'vue'
-import { useMessage } from 'naive-ui'
+import { computed, reactive, ref, onMounted } from 'vue'
+import { useMessage, useDialog } from 'naive-ui'
+import axios from '@/http/interceptor'
 import { useAdminStore } from '@/stores/admin'
 import {
   NButton, NCard, NForm, NFormItem, NInput, NInputNumber,
@@ -56,6 +58,8 @@ import {
 
 const store = useAdminStore()
 const message = useMessage()
+const dialog = useDialog()
+const restarting = ref(false)
 
 const form = reactive({})
 
@@ -95,8 +99,47 @@ async function loadData() {
 function handleSave() {
   const updates = { ...form }
   store.updateConfig(updates)
-    .then(() => message.success('配置已更新'))
+    .then(() => message.success('已保存到 .env，重启后端后生效'))
     .catch(e => message.error(e.response?.data?.detail || '保存失败'))
+}
+
+function handleRestart() {
+  dialog.warning({
+    title: '重启后端服务',
+    content: '将原地重启后端进程（数秒内接口不可用）。确定继续？',
+    positiveText: '重启',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const data = await store.restartBackend()
+        message.info((data && data.message) || '后端正在重启…')
+      } catch (e) {
+        message.error(e.response?.data?.detail || '重启请求失败')
+        return
+      }
+      await waitForBackend()
+    },
+  })
+}
+
+// 重启后轮询 /api/health，恢复后刷新配置
+async function waitForBackend() {
+  restarting.value = true
+  const deadline = Date.now() + 60000
+  await new Promise(r => setTimeout(r, 1500))   // 先留时间给旧进程退出
+  while (Date.now() < deadline) {
+    try {
+      await axios.get('/api/health', { timeout: 2000 })
+      restarting.value = false
+      message.success('后端已重启')
+      await loadData()
+      return
+    } catch {
+      await new Promise(r => setTimeout(r, 1000))
+    }
+  }
+  restarting.value = false
+  message.error('等待后端重启超时，请手动刷新页面')
 }
 
 function handleReset() {

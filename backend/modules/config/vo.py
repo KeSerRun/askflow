@@ -17,6 +17,10 @@ def show(config: dict) -> JSONResponse:
 
 def updated(success: bool, config: dict) -> JSONResponse:
     return json({
-        "message": "配置更新成功" if success else "未检测到变更",
+        "message": "配置已保存，重启后端后生效" if success else "未检测到变更",
         "config": config,
     })
+
+
+def restarting() -> JSONResponse:
+    return json({"message": "后端正在重启，请稍候…"})

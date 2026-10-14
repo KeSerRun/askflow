@@ -72,7 +72,6 @@ def _cfg(max_iter=5):
         llm_model="fake-model",
         llm_reasoning_effort=None,
         storage_data_dir="",
-        reload_if_changed=None,
     )
 
 
@@ -150,6 +149,26 @@ class AgentGraphTest(unittest.TestCase):
             self.assertIsNone(loop.resume_from_checkpoint("nope"))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_temperature_from_config(self):
+        # 配置缺失 → 回退 0.3
+        self.assertEqual(_loop(_SCRIPT)._temperature, 0.3)
+        # 显式配置生效
+        loop = ToolLoop(
+            FakeChat(_SCRIPT),
+            SimpleNamespace(**{**_cfg().__dict__, "llm_temperature": 0.9}),
+            data_store=None, vector_store=None,
+            system_context=SystemContext(str(PROMPTS)),
+        )
+        self.assertEqual(loop._temperature, 0.9)
+        # 非法值 → 回退 0.3
+        loop_bad = ToolLoop(
+            FakeChat(_SCRIPT),
+            SimpleNamespace(**{**_cfg().__dict__, "llm_temperature": ""}),
+            data_store=None, vector_store=None,
+            system_context=SystemContext(str(PROMPTS)),
+        )
+        self.assertEqual(loop_bad._temperature, 0.3)
 
 
 if __name__ == "__main__":

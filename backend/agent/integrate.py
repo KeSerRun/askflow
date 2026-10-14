@@ -99,10 +99,74 @@ class IntegratedSystem:
         """
         if self.checkpoint_store is None:
             return None
+        if stream:
+            return self._resume_stream(session_id, answer=answer, extra_iterations=extra_iterations)
         return self.tool_loop.resume_from_checkpoint(
             session_id, answer=answer,
             extra_iterations=extra_iterations, stream=stream,
         )
+
+    def _resume_stream(self, session_id, *, answer=None, extra_iterations=0):
+        """流式续跑（澄清后继续 / 断点续跑），与 :meth:`_run_agent_stream` 同构。
+
+        工作线程跑 ``resume_from_checkpoint(stream=True, emit_event=...)``，
+        主线程从队列取事件产出，支持中断。
+        """
+        import queue as _queue
+        cancel_event = threading.Event()
+        self._cancel_events[session_id] = cancel_event
+
+        def is_cancelled():
+            return cancel_event.is_set()
+
+        session_queue: _queue.Queue = _queue.Queue()
+        _DONE = object()
+        state_flag = {"resumable": True}
+
+        def _worker():
+            try:
+                gen = self.tool_loop.resume_from_checkpoint(
+                    session_id, answer=answer, extra_iterations=extra_iterations,
+                    stream=True, cancel_check=is_cancelled, emit_event=session_queue.put,
+                )
+                if gen is None:
+                    state_flag["resumable"] = False
+                    return
+                for _ in gen:
+                    pass
+            except Exception as e:  # noqa: BLE001
+                logger.error(f"续跑异常: {e}")
+                session_queue.put({"type": "status", "status": "error", "error": str(e)})
+            finally:
+                session_queue.put(_DONE)
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
+        try:
+            while True:
+                try:
+                    ev = session_queue.get(timeout=1)
+                except _queue.Empty:
+                    if is_cancelled():
+                        yield {"type": "status", "status": "cancelled"}
+                        return
+                    if not t.is_alive():
+                        break
+                    continue
+                if ev is _DONE:
+                    break
+                if is_cancelled():
+                    yield {"type": "status", "status": "cancelled"}
+                    return
+                yield ev
+        finally:
+            self._cancel_events.pop(session_id, None)
+            t.join(timeout=2)
+
+        if not state_flag["resumable"]:
+            yield {"type": "token", "text": "没有可恢复的进行中生成。"}
+            yield {"type": "status", "status": "finished"}
 
 
     # ── 会话历史管理 ──

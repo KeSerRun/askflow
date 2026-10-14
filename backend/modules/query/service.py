@@ -215,6 +215,24 @@ class QueryService:
         )
         return _GuardedStream(gen, lambda: self._release(session_id))
 
+    def stream_resume(self, *, session_id: str, answer: str | None = None,
+                      extra_iterations: int = 0) -> Iterator:
+        """流式续跑未完成的生成（澄清后继续 / 断点续跑）。
+
+        与 :meth:`stream` 一致：同步占位（冲突在响应开始前抛），生成器结束/关闭时自动释放。
+        """
+        self._acquire(session_id)
+        gen = self._runner.resume_agent(
+            session_id, answer=answer, extra_iterations=extra_iterations, stream=True,
+        )
+        if gen is None:
+            self._release(session_id)
+            return iter((
+                {"type": "token", "text": "没有可恢复的进行中生成。"},
+                {"type": "status", "status": "finished"},
+            ))
+        return _GuardedStream(gen, lambda: self._release(session_id))
+
     def cancel(self, session_id: str) -> None:
         """中断指定会话正在进行的生成（随后 _wrap_stream 的 finally 会释放占位）。"""
         self._runner.cancel_generation(session_id)

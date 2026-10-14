@@ -87,11 +87,18 @@ async def resume_query(body: ResumeBody, user: dict = Depends(require_auth)):
     """从检查点续跑该会话未完成的生成（断点续跑 / 澄清后带 answer 继续）。
 
     Args:
-        body: 续跑请求体（session_id + 可选 answer / extra_iterations）。
+        body: 续跑请求体（session_id + 可选 answer / extra_iterations / stream）。
 
     Returns:
-        JSONResponse: ``{"answer": str}``。
+        StreamingResponse: ``body.stream=True`` 时返回 SSE 事件流。
+        JSONResponse: 否则返回 ``{"answer": str}``。
     """
+    if body.stream:
+        return views.sse(query_service.stream_resume(
+            session_id=body.session_id,
+            answer=body.answer,
+            extra_iterations=body.extra_iterations,
+        ))
     answer = await query_service.resume(
         session_id=body.session_id,
         answer=body.answer,

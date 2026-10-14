@@ -18,6 +18,23 @@ from openai import OpenAI
 from infra.util.logger import logger
 from core.models import ChatResponse, ChatStreamEvent
 
+# 思考内容的字段名：DeepSeek-R1 用 ``reasoning_content``，Ollama(Qwen3) 用 ``reasoning``
+_REASONING_FIELDS = ("reasoning_content", "reasoning")
+
+
+def _delta_field(delta, *names: str) -> Optional[str]:
+    """读取流式 delta 的字段值。
+
+    兼容 OpenAI SDK 的两种承载方式：直接属性（``delta.x``）与 ``delta.model_extra['x']``
+    （SDK 未知字段的落点）。按 ``names`` 顺序返回首个非空值，都没有则 None。
+    """
+    extra = getattr(delta, "model_extra", None) or {}
+    for name in names:
+        value = extra.get(name) or getattr(delta, name, None)
+        if value:
+            return value
+    return None
+
 
 class OpenAIChatModel:
     """OpenAI 兼容对话模型适配器（ports.ChatModel）。"""
@@ -65,7 +82,7 @@ class OpenAIChatModel:
         *,
         tools: Optional[list[dict]] = None,
         tool_choice: str = "auto",
-        temperature: float = 0.7,
+        temperature: float = 0.3,
         max_tokens: int = 8192,
         reasoning_effort: Optional[str] = None,
     ) -> ChatResponse:
@@ -105,7 +122,7 @@ class OpenAIChatModel:
         *,
         tools: Optional[list[dict]] = None,
         tool_choice: str = "auto",
-        temperature: float = 0.7,
+        temperature: float = 0.3,
         max_tokens: int = 8192,
         reasoning_effort: Optional[str] = None,
     ) -> Iterator[ChatStreamEvent]:
@@ -138,10 +155,8 @@ class OpenAIChatModel:
                 if content:
                     yield ChatStreamEvent.content(content)
 
-                reasoning = getattr(delta, "reasoning_content", None)
-                if reasoning is None:
-                    extra = getattr(delta, "model_extra", None) or {}
-                    reasoning = extra.get("reasoning_content")
+                # 思考内容（thinking 模型）：字段名兼容 reasoning_content / reasoning
+                reasoning = _delta_field(delta, *_REASONING_FIELDS)
                 if reasoning:
                     yield ChatStreamEvent.reasoning(reasoning)
 

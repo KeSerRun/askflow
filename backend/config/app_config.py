@@ -53,6 +53,7 @@ class AppConfig:
     llm_base_url: str
     llm_model: str
     llm_reasoning_effort: str | None
+    llm_temperature: float
     llm_timeout: float
     llm_max_retries: int
     llm_health_url: str | None
@@ -233,12 +234,6 @@ class Config:
             raise AttributeError(name)
         self._ensure()
         return getattr(self._cfg, name)
-
-    # ── 方法 ──
-
-    def reload_if_changed(self) -> None:
-        """重新从 .env 加载配置（替换内部 AppConfig）。"""
-        self._cfg = load_app_config()
 
 
 # ── 全局单例 ──

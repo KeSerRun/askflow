@@ -49,6 +49,11 @@ class ApiSmokeTest(unittest.TestCase):
         admin = [p for p in self.paths if p.startswith("/api/admin")]
         self.assertGreaterEqual(len(admin), 5)
 
+    def test_restart_route_registered(self):
+        # 仅校验路由存在；不调用（否则会真的重启进程）
+        self.assertIn("/api/admin/restart", self.paths)
+        self.assertIn("/api/admin/config", self.paths)
+
     def test_no_versioned_parallel_routes(self):
         v2 = [p for p in self.paths if "/api/v2" in p]
         self.assertEqual(v2, [], "并行版本路由（/api/v2）应已合并进统一 /api")
