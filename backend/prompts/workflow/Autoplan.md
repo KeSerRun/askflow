@@ -73,20 +73,4 @@ description: 规划工作流 —— 拆解任务 → set_todolist 建清单 → 
 3. **信息来源** — 关键信息标注来源文件/链接。
 4. **后续建议** — 必要时给下一步方向。
 
----
 
-### 可用工具参考
-
-| 工具 | 用途 |
-|------|------|
-| `set_todolist` / `check_todo` | 建立数字化任务清单并逐项勾选（本工作流核心） |
-| `search_knowledge_base` | 知识库混合检索（`mode`：mixed/text/image） |
-| `search_document_content` | 文档全文逐字搜索 |
-| `ocr_image` | 读取截图/图片中的文字 |
-| `web_search` | 联网搜索实时信息 |
-| `read_url` | 阅读网页全文 |
-| `read_chunk_context` / `read_knowledge_base_document` / `list_knowledge_base_files` | 补全上下文 / 读全文 / 文档清单 |
-| `read_workflow` | 按需读取其它工作流（DeepResearch 等） |
-| `set_goal` / `complete_goal` | 跨轮次持续目标 |
-| `ask_user_for_clarification` | 需求不明时澄清 |
-| `my` | 查看配置与工具调用统计 |

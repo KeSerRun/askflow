@@ -64,17 +64,4 @@ description: 新闻简报工作流 —— 快速搜索 → 要点提炼 → 结�
 - [ ] 数据是否最新
 - [ ] 是否简明扼要，没有冗余信息
 
----
 
-### 可用工具参考
-
-| 工具 | 用途 |
-|------|------|
-| `web_search` | 联网搜索最新资讯 |
-| `read_url` | 阅读搜索结果全文 |
-| `search_knowledge_base` | 检索知识库中的相关资料（`mode`：mixed/text/image） |
-| `search_document_content` | 在知识库文档中搜索关键词 |
-| `ocr_image` | 读取用户截图/图表中的文字 |
-| `read_chunk_context` | 查看检索结果的上下文 |
-| `set_todolist` / `check_todo` | （多步简报时）建立并勾选简报步骤 |
-| `my` | 查看当前工具调用统计和配置 |

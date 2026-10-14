@@ -38,9 +38,10 @@ def _exec_search_kb(
     mode: Annotated[str, Field(
         description="检索输出作用域：mixed（混合，默认）/ text（只返回文本块）/ image（只返回图片块）")] = "mixed",
 ) -> str:
-    """多模态混合检索知识库：接收文本列表与图片引用列表，各自向量化后做混合检索并按 RRF 重排。
+    """语义检索系统知识库：将文本 queries 与图片 images 分别向量化后混合检索、RRF 重排，返回相关文本片段与图片直链。
 
-    返回相关文本片段与图片直链。
+    在“不知道内容在哪篇文档、按意思找”时使用；按关键词精确查证用 search_document_content，
+    通读某篇文档用 read_knowledge_base_document / read_session_document。
     """
     ctx = current_tool_ctx()
     mode = (mode or "mixed").strip().lower()
@@ -90,7 +91,10 @@ def _exec_search_kb(
 def _exec_ocr_image(
     image: Annotated[str, Field(description="图片引用：MinIO 对象键或 /api/documents/image/... 直链")],
 ) -> str:
-    """对单张图片做 OCR（本地 MinerU），识别截图/图表/扫描件里的中英文文字，返回文本内容。"""
+    """对单张图片做 OCR，识别截图/图表/扫描件中的中英文文字并返回文本。
+
+    image 接受 MinIO 对象键或 /api/documents/image/... 直链（可用 list_session_resources 取得）。
+    """
     ctx = current_tool_ctx()
     image = (image or "").strip(' "`')
     if not image:
@@ -153,7 +157,10 @@ def _exec_read_knowledge_base_document(
     offset: Annotated[int, Field(description="字符偏移，用于分页续读")] = 0,
     max_chars: Annotated[int | None, Field(description="本次最多读取字符数")] = None,
 ) -> str:
-    """读取知识库（__system__ 分区）文档的完整全文，支持 offset 分页续读。"""
+    """读取系统知识库（__system__ 分区）某篇文档的完整正文，支持 offset/max_chars 分页续读。
+
+    filename 为不带扩展名的文档名（先用 list_knowledge_base_files 查）；会话附件请用 read_session_document。
+    """
     ctx = current_tool_ctx()
     filename = (filename or "").strip()
     if not filename:
@@ -169,7 +176,10 @@ def _exec_read_session_document(
     offset: Annotated[int, Field(description="字符偏移，用于分页续读")] = 0,
     max_chars: Annotated[int | None, Field(description="本次最多读取字符数")] = None,
 ) -> str:
-    """读取当前会话已解析文档（MinerU 解析的上传附件）的完整全文，支持 offset 分页续读。"""
+    """读取当前会话中已解析的上传附件的完整正文，支持 offset/max_chars 分页续读。
+
+    filename 为不带扩展名的文档名（先用 list_session_resources 查）；系统知识库文档请用 read_knowledge_base_document。
+    """
     ctx = current_tool_ctx()
     filename = (filename or "").strip()
     if not filename:
@@ -183,7 +193,10 @@ def _exec_read_session_document(
 def _exec_list_session_resources(
     pattern: Annotated[str | None, Field(description="资源名关键词过滤（可选）")] = None,
 ) -> str:
-    """列出当前会话的资源：上传的文件/图片（含原始文件与粘贴图片）、MinerU 解析出的插图与已解析文档，支持关键词过滤。"""
+    """列出当前会话的资源：上传的原始文件、粘贴/附带图片、MinerU 解析出的插图与已解析文档，含对象键/直链与大小。
+
+    可用 pattern 关键词过滤；用于查看“本会话上传了什么”并取得对象键。系统知识库文档请用 list_knowledge_base_files。
+    """
     ctx = current_tool_ctx()
     pattern = (pattern or "").strip().lower()
     logger.debug(f"tool list_session_resources pattern={pattern!r}")
@@ -239,7 +252,10 @@ def _exec_list_knowledge_base_files(
     pattern: Annotated[str | None, Field(description="文件名关键词过滤")] = None,
     sort_by: Annotated[str, Field(description="排序方式：'name' 或 'time'")] = 'name',
 ) -> str:
-    """列出知识库（__system__ 分区）中的文件，支持关键词过滤与按名称/时间排序。"""
+    """列出系统知识库（__system__ 分区）中的文档，含类型/大小/修改时间，可用 pattern 过滤、sort_by（name/time）排序。
+
+    用于查看知识库有哪些文档并取得精确文件名；会话附件请用 list_session_resources。
+    """
     ctx = current_tool_ctx()
     if not ctx.vector_store:
         return "(知识库不可用)"
@@ -281,7 +297,10 @@ def _exec_read_chunk_context(
     before: Annotated[int, Field(description="向前取块数，上限 10")] = 3,
     after: Annotated[int, Field(description="向后取块数，上限 10")] = 3,
 ) -> str:
-    """按 chunk ID 读取目标块及其前后相邻块以补全上下文（目标块以【目标】标记）。"""
+    """按 chunk ID 读取该块及其前后相邻块以补全上下文（目标块以【目标】标记）。
+
+    chunk ID 取自 search_knowledge_base 的检索结果。
+    """
     ctx = current_tool_ctx()
     chunk_id = (chunk_id or "").strip()
     before = before
@@ -363,7 +382,10 @@ def _exec_search_document_content(
     source: Annotated[str | None, Field(description="限定单篇文档名（不含扩展名）")] = None,
     max_results: Annotated[int, Field(description="最大匹配数，上限 50")] = 10,
 ) -> str:
-    """在知识库与会话附件的全文（txt 渲染）中按关键词搜索，返回命中的文档名与上下文片段。"""
+    """在系统知识库与会话附件的全文（txt）中按关键词精确匹配，返回命中文档名与所在行片段。
+
+    适合查具体数字/名称/术语的确切出处；语义模糊时改用 search_knowledge_base，source 可限定单篇文档名。
+    """
     ctx = current_tool_ctx()
     keyword = (keyword or "").strip()
     if not keyword:

@@ -98,19 +98,3 @@ description: 对比分析工作流 —— 多实体并行搜索 → 维度提取
 - [ ] 关键数据是否标注了来源
 - [ ] 是否给出了场景化的选择建议
 
----
-
-### 可用工具参考
-
-| 工具 | 用途 |
-|------|------|
-| `web_search` | 联网搜索各实体的信息 |
-| `read_url` | 阅读搜索结果获取详细数据 |
-| `search_knowledge_base` | 检索知识库中的相关资料（`mode`：mixed/text/image） |
-| `search_document_content` | 在文档全文中搜索对比对象 |
-| `ocr_image` | 读取用户截图/图表中的文字 |
-| `list_knowledge_base_files` | 查看知识库文档清单 |
-| `read_chunk_context` | 查看检索结果上下文 |
-| `read_knowledge_base_document` | 阅读知识库文档全文 |
-| `set_todolist` / `check_todo` | （多步时）建立并勾选对比步骤 |
-| `my` | 查看当前工具调用统计 |

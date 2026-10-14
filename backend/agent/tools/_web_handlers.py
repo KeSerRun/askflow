@@ -28,7 +28,10 @@ def _exec_read_url(
     offset: Annotated[int | None, Field(description="读取起始偏移，用于分页续读")] = None,
     max_chars: Annotated[int | None, Field(description="本次最多读取字符数")] = None,
 ) -> str:
-    """抓取并提取网页的可读正文内容，支持 offset / max_chars 分页续读，含重定向链 SSRF 防护。"""
+    """抓取指定 URL 并提取可读正文（自动去除广告/导航），支持 offset/max_chars 分页续读，含重定向链 SSRF 防护。
+
+    url 需为 http(s):// 开头的完整地址；常配合 web_search 的结果链接使用。
+    """
     ctx = current_tool_ctx()
     url = (url or "").strip()
     if not url:
@@ -79,7 +82,10 @@ def _exec_web_search(
     query: Annotated[str, Field(description="搜索关键词")],
     max_results: Annotated[int, Field(description="返回结果数，上限 10")] = 5,
 ) -> str:
-    """通过 SearXNG 元搜索引擎进行实时联网搜索，自动补充当前年份，返回带标题、摘要与链接的结果。"""
+    """联网实时搜索（SearXNG），自动补充当前年份，返回标题、摘要与链接。
+
+    用于时事/最新信息或模型知识之外的内容；拿到链接后可再用 read_url 读正文。
+    """
     ctx = current_tool_ctx()
     query = (query or "").strip()
     if not query:

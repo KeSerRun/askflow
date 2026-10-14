@@ -72,17 +72,3 @@ description: 深度调研工作流 —— 建立任务清单 → 多角度搜索
 - [ ] 回答用户核心问题
 - [ ] Markdown 格式正确
 
----
-
-### 可用工具参考
-
-| 工具 | 用途 |
-|------|------|
-| `set_todolist` / `check_todo` | 建立并逐项勾选调研步骤 |
-| `search_knowledge_base` | 知识库混合检索（`mode`：mixed/text/image，多角度 queries） |
-| `search_document_content` | 文档全文逐字搜索 |
-| `ocr_image` | 读取截图/图表中的文字 |
-| `web_search` / `read_url` | 联网搜索 + 读网页全文 |
-| `read_chunk_context` / `read_knowledge_base_document` / `list_knowledge_base_files` | 补全上下文 / 读全文 / 文档清单 |
-| `set_goal` / `complete_goal` | 跨轮次持续目标 |
-| `my` | 查看配置与工具调用统计 |
