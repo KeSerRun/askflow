@@ -33,23 +33,23 @@ pip install -e .
 
 ### 2. 配置
 
-配置以环境变量为主（12-factor）：在 `backend/` 下复制 `.env.example` 为 `.env` 后填入必要配置，
+配置以环境变量为主（12-factor）：在 `backend/` 下复制 `.env.default` 为 `.env` 后填入必要配置，
 也可通过系统环境变量或 `docker compose` 注入覆盖。
 
 ```bash
 cd backend
-# 首次部署：复制模板并填入配置
-cp .env.example .env
+# 首次部署：复制默认基线并填入配置
+cp .env.default .env
 
 # 最小配置需要：
 #   LLM_API_KEY / LLM_BASE_URL / LLM_MODEL
 #   EMBED_API_KEY / EMBED_BASE_URL / EMBED_MODEL
 #   MINERU_API_KEY（PDF 解析）
 #
-# 完整配置项参见 .env.example（各段均有注释）
+# 完整配置项参见 .env.default（各段均有注释）
 ```
 
-参见 [backend/.env.example](backend/.env.example) 各段注释。
+参见 [backend/.env.default](backend/.env.default) 各段注释。
 
 ### 3. 启动服务
 
@@ -142,7 +142,7 @@ askflow/
 │   ├── agent/                    #   Agent 引擎（ToolLoop+14 工具）
 │   ├── prompts/  tests/          #   提示词模板 / 测试基座
 │   ├── data/                     #   运行时数据（向量库 / 日志 / 上传）
-│   └── .env  .env.example  pyproject.toml
+│   └── .env  .env.default  .env.prod  pyproject.toml
 │
 ├── frontend/                     # Vue 3 前端（`cd frontend && npm run build`）
 │   ├── src/  vite.config.js
@@ -200,7 +200,7 @@ askflow/
 配置**分层加载**（后者覆盖前者）：
 
 1. `backend/.env.default` —— **默认配置**（完整默认值基线，随项目提供，程序启动时读取）
-2. `backend/.env` —— **用户覆盖**（只需填写要修改的项；可从 `.env.example` 复制）
+2. `backend/.env` —— **用户覆盖**（只需填写要修改的项；可从 `.env.default` 复制）
 3. **系统环境变量** —— 最高优先级（Docker / CI 注入）
 
 完整默认值见 [backend/.env.default](backend/.env.default)。关键配置（在 `.env` 中覆盖）：

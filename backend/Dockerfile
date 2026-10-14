@@ -26,6 +26,10 @@ RUN pip install --no-cache-dir --upgrade pip -i https://pypi.tuna.tsinghua.edu.c
 COPY backend/ /workspace/backend/
 COPY frontend/dist /workspace/frontend/dist
 
+# 生产配置：把 .env.prod 作为镜像内的 .env（容器读取它；后台“系统设置”保存也写它）。
+# 需保证构建上下文存在 backend/.env.prod（生产部署前从 .env.prod 维护）。
+COPY backend/.env.prod /workspace/backend/.env
+
 EXPOSE 11000
 
 # app.py 内 uvicorn 监听 0.0.0.0:11000

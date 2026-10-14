@@ -88,17 +88,33 @@ class ImageEmbedBody(BaseModel):
     images: list[str]  # base64（可带 data: 前缀）
 
 
+# 是否预热：默认关（CLIP_WARMUP=0）。开启则**后台线程**预热，不阻塞启动。
+_WARMUP = os.environ.get("CLIP_WARMUP", "0").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _do_warmup() -> None:
+    try:
+        model, processor = _ensure()
+        _run_text(model, processor, ["预热"])
+        _run_image(model, processor, [Image.new("RGB", (1, 1), (0, 0, 0))])
+        print("[clip-api] 预热完成（模型已加载）", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[clip-api] 预热失败（忽略，首次请求会重试）: {e}", flush=True)
+
+
 @app.on_event("startup")
-def _warmup():
-    model, processor = _ensure()
-    _run_text(model, processor, ["预热"])
-    _run_image(model, processor, [Image.new("RGB", (1, 1), (0, 0, 0))])
+def _on_startup():
+    if not _WARMUP:
+        print("[clip-api] CLIP_WARMUP=0，跳过预热（模型在首次请求时懒加载）", flush=True)
+        return
+    # 后台线程预热：启动/健康检查不被模型加载阻塞
+    threading.Thread(target=_do_warmup, daemon=True).start()
 
 
 @app.get("/health")
 def health():
-    _ensure()
-    return {"status": "ok", "model": MODEL_NAME, "dim": 512}
+    # 轻量探活：不触发模型加载（避免把重加载算进启动/就绪耗时）
+    return {"status": "ok", "model": MODEL_NAME, "dim": 512, "loaded": _model is not None}
 
 
 @app.post("/v1/embeddings")

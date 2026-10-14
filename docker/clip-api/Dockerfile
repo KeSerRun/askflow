@@ -16,7 +16,10 @@ RUN pip install --no-cache-dir \
         "transformers>=4.38"
 
 COPY server.py /app/server.py
+COPY entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/entrypoint.sh
 
 EXPOSE 80
 
-CMD ["python", "-m", "uvicorn", "server:app", "--host", "0.0.0.0", "--port", "80"]
+# 幂等启动：已缓存则离线，未缓存则联网下载一次（见 entrypoint.sh）
+CMD ["sh", "/app/entrypoint.sh"]

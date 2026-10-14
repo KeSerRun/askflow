@@ -1,7 +1,7 @@
 """infra.adapters.vector.cached —— 给向量库加"读缓存、写失效"。
 
-缓存读取（分区来源列表 / 数量）；写操作（入库 / 删除）后版本自增，旧缓存自然失效。
-未覆写的属性/方法（metadata / dense_vectors / dimension / search ...）经 __getattr__ 透传。
+缓存读取（分区来源列表 / 数量 / 元数据）；写操作（入库 / 删除）后版本自增，旧缓存自然失效。
+未覆写的属性/方法（dense_vectors / dimension / search ...）经 __getattr__ 透传。
 """
 
 from __future__ import annotations
@@ -46,6 +46,11 @@ class CachedVectorStore:
         return value
 
     # ── 读（缓存） ──
+
+    @property
+    def metadata(self) -> list:
+        """chunk 元数据（全量 query Milvus，较重）——缓存，写操作后版本失效。"""
+        return self._read("metadata", (), lambda: self._store.metadata)
 
     def get_sources(self):
         return self._read("sources", (),

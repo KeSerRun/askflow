@@ -1,13 +1,35 @@
-# Docker 构建上下文排除（避免把本地大目录塞入镜像）
-# 注意：frontend/dist 不排除——它是需要打进镜像的前端构建产物
-**/.venv/
-**/node_modules/
+# ============================================================
+# Docker 构建上下文排除
+# 构建上下文 = 项目根（docker-compose: context: ..）
+# 目的：减小镜像体积 + 防止密钥/数据被 COPY 进镜像。
+# 注意：不要排除 backend/.env.default（运行时默认基线）
+#       也不要排除 frontend/dist（Dockerfile 需要 COPY 它）
+# ============================================================
+
+# 版本控制
+.git
+.gitignore
+
+# 环境变量：仅排除开发用的 backend/.env（不进镜像）；
+# backend/.env.prod 不排除 —— Dockerfile 会在构建时把它复制为镜像内的 .env。
+backend/.env
+
+# Python 产物
 **/__pycache__/
-**/*.pyc
-backend/data/
+**/*.py[cod]
+**/*.egg-info/
+backend/.venv/
+backend/.pytest_cache/
+backend/.ruff_cache/
+
+# Docker 运行数据卷
 docker/data/
-.git/
-logs/
-.ruff_cache/
+
+# 前端
+frontend/node_modules/
+frontend/dist-ssr/
+
+# 其它
 *.log
-.env
+.claude/
+IDEA.md

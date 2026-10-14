@@ -1,20 +1,27 @@
 # ════════════════════════════════════════════════════════════════
 # AskFlow 基础设施编排
 # 包含: MinIO + etcd + Milvus + Attu + Embedding(Chinese-CLIP) + MinerU(纯 CPU) + SearXNG
-# 仅生产（--profile prod）追加: MySQL + Redis + Backend 容器
-# 本地（不带 --profile prod）后端用 sqlite + inprocess 缓存，无需 MySQL/Redis。
+#        + MySQL + Redis（默认启动；便于随时把配置切到 mysql/redis 连接源）
+# 仅生产（--profile prod）追加: Backend 容器
+# 本地后端（`python app.py`）默认 sqlite + inprocess，但也可改配置连上面的 mysql/redis。
 #
 # 用法（在 docker/ 目录下）:
-#   cd docker && docker compose up -d               # 默认只起基础设施（本地开发用）
+#   cd docker && docker compose up -d               # 起全部基础设施（含 MySQL/Redis）
 #   # 或从项目根: docker compose -f docker/docker-compose.yml up -d
-#   # 生产后端(含 MySQL/Redis): docker compose --profile prod up -d --build
+#   # 生产后端容器: docker compose --profile prod up -d --build
+#
+# 生产环境配置:
+#   后端配置在**构建时**由 Dockerfile 把 backend/.env.prod 复制为镜像内的 .env。
+#   即：容器内应用读/写 /workspace/backend/.env；后台“系统设置”保存即热重载生效
+#   （注意容器内非持久，`up --build` 重建后回到 .env.prod 的内容）。
+#   改生产配置 → 改 backend/.env.prod → 重新 build。本地开发 `python app.py` 读 backend/.env。
 #
 # 数据卷: 全部以 bind mount 挂载在 docker/data/<服务>/ 下，
 #         数据可见、可直接备份/迁移、便于随项目携带。
 #
 # 端口:
-#   MySQL      3306        (仅 --profile prod)
-#   Redis      6379        (仅 --profile prod)
+#   MySQL      3306
+#   Redis      6379
 #   MinIO      9000/9001   (控制台: http://localhost:9001)
 #   Milvus     19530/9091
 #   Attu       3000        (Milvus 管理台: http://localhost:3000)
@@ -33,7 +40,6 @@ services:
     image: mysql:8.0
     container_name: askflow-mysql
     restart: unless-stopped
-    profiles: ["prod"]   # 仅生产后端需要：本地（sqlite）不启动 MySQL
     environment:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_password}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-askflow}
@@ -61,7 +67,6 @@ services:
     image: redis:7-alpine
     container_name: askflow-redis
     restart: unless-stopped
-    profiles: ["prod"]   # 仅生产缓存：本地（inprocess）不启动 Redis
     ports:
       - "${REDIS_PORT:-6379}:6379"
     volumes:
@@ -88,13 +93,19 @@ services:
       - "${MINIO_CONSOLE_PORT:-9001}:9001"  # 控制台
     volumes:
       - ./data/minio:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
 
   # 初始化 bucket（等待 MinIO 就绪后创建）
   minio-init:
     image: minio/mc:latest
     depends_on:
       minio:
-        condition: service_started
+        condition: service_healthy
     entrypoint: >
       /bin/sh -c "
       until mc alias set rag http://minio:9000 $${MINIO_ROOT_USER:-minioadmin} $${MINIO_ROOT_PASSWORD:-minioadmin}; do sleep 2; done;
@@ -147,11 +158,18 @@ services:
       - "9091:9091"
     volumes:
       - ./data/milvus:/var/lib/milvus
+    healthcheck:
+      # 9091 是 Milvus standalone 的健康端口；就绪前返回非 200
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 90s
     depends_on:
       etcd:
         condition: service_healthy
       minio:
-        condition: service_started
+        condition: service_healthy
 
   # ────────────────────────────────────────────────
   # Attu —— Milvus 官方管理台（GUI）
@@ -168,7 +186,7 @@ services:
       MILVUS_URL: milvus:19530
     depends_on:
       milvus:
-        condition: service_started
+        condition: service_healthy
 
   # ────────────────────────────────────────────────
   # Embedding —— 图文嵌入服务（Chinese-CLIP，纯 CPU，OpenAI 兼容 + 图片嵌入）
@@ -184,14 +202,20 @@ services:
     environment:
       CLIP_MODEL: ${CLIP_MODEL:-OFA-Sys/chinese-clip-vit-base-patch16}
       HF_HOME: /data
-      # 首启自动下载模型到 /data；缓存齐全后可设 HF_HUB_OFFLINE=1 完全离线启动
-      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+      # 预热：1=后台线程预热（默认，启动不被阻塞，模型在后台提前加载好）；0=完全关闭
+      CLIP_WARMUP: ${CLIP_WARMUP:-1}
+      # 离线与否由入口脚本自动判断：模型已缓存→完全离线；未缓存→联网下载一次（无需手工设 HF_HUB_OFFLINE）
     ports:
       - "${EMBED_PORT:-7997}:80"
     volumes:
       - ./data/clip:/data
-    # 注意：镜像内无 curl/wget，不设容器内健康检查；
-    # 宿主侧验证: curl.exe http://localhost:7997/health
+    healthcheck:
+      # 镜像无 curl/wget，改用自带 python 探活 /health；首启下载/加载 CLIP 模型较慢，start_period 留足
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:80/health',timeout=5).status==200 else 1)"]
+      interval: 15s
+      timeout: 10s
+      retries: 40
+      start_period: 180s
 
   # ────────────────────────────────────────────────
   # MinerU —— 本地文档解析服务（默认启动，纯 CPU，无需 GPU）
@@ -286,12 +310,25 @@ services:
     environment:
       SEARXNG_BASE_URL: "http://localhost:${SEARXNG_PORT:-8888}/"
     # 限流 / JSON 格式等行为在 ./data/searxng/settings.yml 中配置
+    healthcheck:
+      # 镜像内无 curl，用自带 wget 探活 /healthz
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   # ────────────────────────────────────────────────
   # Backend —— FastAPI 后端（生产容器化）
   # 使用 profiles: 默认不启动（开发时本地跑 python app.py）；
   # 生产用 `docker compose --profile prod up -d` 启用。
-  # 依赖 backend/.env 提供 LLM/Embedding/MinerU 密钥（可选，缺失则用默认）
+  #
+  # 配置方式：**构建时把 backend/.env.prod 复制为镜像内的 .env**（见 Dockerfile），
+  #   容器内应用读取 /workspace/backend/.env；不使用 env_file/environment 注入
+  #   （否则环境变量优先级高于 .env 文件，后台“系统设置”保存会无法覆盖）。
+  #   后台“系统设置”保存会写回容器内的 .env 并热重载生效；
+  #   注意：容器内该文件非持久，`up --build` 重建后会恢复为镜像里的 .env.prod 内容。
+  #   改生产配置请改 backend/.env.prod 后重新 build。
   # ────────────────────────────────────────────────
   backend:
     profiles: ["prod"]
@@ -300,57 +337,23 @@ services:
       dockerfile: backend/Dockerfile
     container_name: askflow-backend
     restart: unless-stopped
-    env_file:
-      - path: ../backend/.env
-        required: false
-    environment:
-      # 生产环境：日志只保留 ERROR 及以上（覆盖 ../backend/.env 的 LOG_*）
-      APP_ENV: production
-      # 容器内以服务名互联（覆盖 .env 中的 127.0.0.1）
-      STORAGE_BACKEND: mysql
-      STORAGE_DB_URL: mysql+pymysql://${MYSQL_USER:-askflow}:${MYSQL_PASSWORD:-askflow_password}@mysql:3306/${MYSQL_DATABASE:-askflow}
-      VECTOR_BACKEND: milvus
-      VECTOR_MILVUS_URI: http://milvus:19530
-      OBJECT_BACKEND: minio
-      OBJECT_MINIO_ENDPOINT: minio:9000
-      OBJECT_MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
-      OBJECT_MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
-      OBJECT_MINIO_BUCKET: rag-files
-      CACHE_BACKEND: redis
-      REDIS_URL: redis://redis:6379/0
-      # 并发调优：生产/开发同配置；调用记录落库策略由 APP_ENV 决定（生产只记 HTTP>=300）
-      APP_THREAD_POOL: 20
-      APP_WORKERS: 1
-      # 本地嵌入服务（服务名互联；clip-api 容器内监听 80，7997 只是宿主映射）
-      EMBED_BASE_URL: http://embedding:80/v1
-      # 容器内健康检查地址（覆盖 ../backend/.env 里固化的 127.0.0.1）
-      EMBED_HEALTH_URL: http://embedding:80/health
-      MINERU_HEALTH_URL: http://mineru-api:8000/v1/health
-      MILVUS_HEALTH_URL: http://milvus:9091/healthz
-      MINIO_HEALTH_URL: http://minio:9000/minio/health/live
-      STORAGE_DATA_DIR: data
-      LOG_PATH: data/logs
-      # 前端静态资源：容器内用相对路径（相对于 /workspace/backend），避免宿主绝对路径泄漏
-      WEB_DIST_DIR: ../frontend/dist
-      WEB_ASSETS_DIR: ../frontend/dist/assets
-      WEB_INDEX_FILE: ../frontend/dist/index.html
-      # 使用本地 MinerU（同网络内已启动）：容器内指向服务名（覆盖 ../backend/.env 的 127.0.0.1）
-      MINERU_BASE_URL: http://mineru-api:8000
-      # 联网搜索：容器内经服务名访问本地 SearXNG
-      SEARCH_SEARXNG_URL: http://searxng:8080
+    volumes:
+      # 运行时数据（向量库/上传/日志）
+      - ./data/backend:/workspace/backend/data
     ports:
       - "${BACKEND_PORT:-11000}:11000"
-    volumes:
-      # 后端运行时数据（向量库/上传/日志）——挂载在 docker/data/backend
-      - ./data/backend:/workspace/backend/data
     depends_on:
       mysql:
         condition: service_healthy
       redis:
         condition: service_healthy
       minio:
-        condition: service_started
+        condition: service_healthy
       milvus:
-        condition: service_started
+        condition: service_healthy
       embedding:
-        condition: service_started
+        condition: service_healthy
+      mineru-api:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
