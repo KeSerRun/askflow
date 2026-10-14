@@ -7,11 +7,11 @@
   - ``CachedRepo`` 读缓存（缓存纯 dict，命中重建实例）
 """
 
-from .orm import Base, model_for, row_to_dict, row_from_dict  # noqa: F401
+from .cached_repo import CachedRepo  # noqa: F401
+from .mysql_repo import MySQLRepo  # noqa: F401
+from .orm import Base, model_for, row_from_dict, row_to_dict  # noqa: F401
 from .sql_base import SqlAlchemyRepo  # noqa: F401
 from .sqlite_repo import SqliteRepo  # noqa: F401
-from .mysql_repo import MySQLRepo  # noqa: F401
-from .cached_repo import CachedRepo  # noqa: F401
 
 __all__ = [
     "Base",

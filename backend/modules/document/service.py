@@ -23,11 +23,11 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Optional
 
 from core.app_errors import InvalidInput, NotFound, PermissionDenied, QuotaExceeded
 from infra.adapters.pdf.document_loader import MINERU_EXTENSIONS
 from infra.adapters.pdf.mineru_impl import MinerULoader
+
 from .backend import FileStore, match_img_key
 from .entity import UploadResult
 
@@ -39,12 +39,15 @@ _WINDOWS_RESERVED = {
 }
 _MAX_FILENAME_BYTES = 200
 
+# 会话内图片附件扩展名（存于 ``{会话目录}/query_img/``，随消息发送时写入）
+_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff"}
+
 
 class DocumentService:
     """文档处理用例。"""
 
     def __init__(self, vector: object, *,
-                 object_store: Optional[object] = None,
+                 object_store: object | None = None,
                  mineru_max_concurrency: int = 3, max_session_mb: int = 0):
         """初始化。
 
@@ -72,6 +75,22 @@ class DocumentService:
     def _session_prefix(self, user: str, session_id: str) -> str:
         return f"sessions/{self._session_user(user)}/{os.path.basename(session_id)}"
 
+    def _session_rel(self, filename: str) -> str:
+        """会话对象相对路径：仅允许顶层文件或 ``query_img/<文件>``（防路径穿越）。"""
+        parts = [p for p in (filename or "").replace("\\", "/").split("/") if p not in ("", ".")]
+        if not parts or any(p == ".." for p in parts):
+            raise PermissionDenied("forbidden")
+        if len(parts) == 1:
+            return parts[0]
+        if len(parts) == 2 and parts[0] == "query_img":
+            return f"query_img/{parts[1]}"
+        raise PermissionDenied("forbidden")
+
+    @staticmethod
+    def _is_image(name: str) -> bool:
+        """按扩展名判断是否为图片附件。"""
+        return os.path.splitext(name)[1].lower() in _IMAGE_EXTS
+
     def _upload_key(self, user: str, filename: str) -> str:
         return f"uploads/{str(user)}/{os.path.basename(filename)}"
 
@@ -90,7 +109,7 @@ class DocumentService:
 
     # ── 清理（系统文档） ──
 
-    def purge(self, user: str, sources: Optional[list] = None) -> None:
+    def purge(self, user: str, sources: list | None = None) -> None:
         """清理原文件与其 chunk 产物。
 
         - ``sources=None``: 清空整个分区（含全部文件与 chunk_out/）
@@ -190,19 +209,35 @@ class DocumentService:
         return results
 
     def list_session_files(self, user: str, session_id: str) -> list[dict]:
-        """列出会话暂存文件（``name`` / ``size``，按名排序；不含 chunk_out 产物）。"""
-        return self._files.list(self._session_prefix(user, session_id))
+        """列出会话暂存文件（``name`` / ``size`` / ``kind``，按名排序）。
+
+        含顶层附件（``name`` 为文件名）与粘贴/附带图片（``name`` 形如 ``query_img/<文件>``）；
+        不含 ``chunk_out`` 等嵌套解析产物。
+        """
+        prefix = self._session_prefix(user, session_id)
+        out = [
+            {"name": it["name"], "size": it["size"],
+             "kind": "image" if self._is_image(it["name"]) else "file"}
+            for it in self._files.list(prefix)
+        ]
+        out += [
+            {"name": f"query_img/{it['name']}", "size": it["size"], "kind": "image"}
+            for it in self._files.list(f"{prefix}/query_img")
+        ]
+        return sorted(out, key=lambda x: x["name"])
 
     def delete_session_file(self, user: str, session_id: str, filename: str) -> None:
         """删除会话暂存下的单个文件（连同其解析产物与状态；不存在则忽略）。"""
+        rel = self._session_rel(filename)
         prefix = self._session_prefix(user, session_id)
-        name = os.path.basename(filename)
-        self._files.delete(f"{prefix}/{name}")
-        stem = os.path.splitext(name)[0]
+        self._files.delete(f"{prefix}/{rel}")
+        if rel.startswith("query_img/"):
+            return  # 图片附件无解析产物/状态
+        stem = os.path.splitext(rel)[0]
         self._files.delete_prefix(f"{prefix}/chunk_out/{stem}")
         key = self._parse_key(user, session_id)
         with self._parse_lock:
-            self._parse_states.get(key, {}).pop(name, None)
+            self._parse_states.get(key, {}).pop(rel, None)
 
     def clear_session_files(self, user: str, session_id: str) -> None:
         """清空会话暂存（含解析产物与解析状态）。"""
@@ -221,14 +256,12 @@ class DocumentService:
             AppError 403: 路径穿越。
             AppError 404: 文件不存在。
         """
-        name = os.path.basename(filename)
-        if name in ("", ".", ".."):
-            raise PermissionDenied("forbidden")
+        rel = self._session_rel(filename)
         prefix = self._session_prefix(user, session_id)
-        data = self._files.get_bytes(f"{prefix}/{name}")
+        data = self._files.get_bytes(f"{prefix}/{rel}")
         if data is None:
             raise NotFound("file not found")
-        return data, name
+        return data, os.path.basename(rel)
 
     # ── 会话附件 MinerU 解析（对话页上传 → 解析为 txt，不入向量库） ──
 
@@ -319,7 +352,7 @@ class DocumentService:
     def _media_of(name: str) -> str:
         return mimetypes.guess_type(name)[0] or "application/octet-stream"
 
-    def read_image(self, doc_stem: str, img_name: str) -> Optional[tuple[bytes, str, str]]:
+    def read_image(self, doc_stem: str, img_name: str) -> tuple[bytes, str, str] | None:
         """按 doc_stem 定位 MinerU 解析图片并读取字节。
 
         Returns:
@@ -335,7 +368,7 @@ class DocumentService:
                         return data, self._media_of(item["name"]), os.path.basename(item["name"])
         return None
 
-    def read_query_image(self, key: str) -> Optional[tuple[bytes, str, str]]:
+    def read_query_image(self, key: str) -> tuple[bytes, str, str] | None:
         """读取对话页粘贴图片（``sessions/{user_id}/{session_id}/query_img/...``）。
 
         Returns:
@@ -350,7 +383,7 @@ class DocumentService:
             return None
         return data, self._media_of(name), name
 
-    def read_chunk_image(self, key: str) -> Optional[tuple[bytes, str, str]]:
+    def read_chunk_image(self, key: str) -> tuple[bytes, str, str] | None:
         """按对象键读取 MinerU 解析图片（会话附件或系统文档的 ``chunk_out/.../images/``）。
 
         与会话附件/知识库图片共用同一入口：键形如
@@ -370,7 +403,7 @@ class DocumentService:
             return None
         return data, self._media_of(key), os.path.basename(key)
 
-    def read_image_global(self, img_name: str) -> Optional[tuple[bytes, str, str]]:
+    def read_image_global(self, img_name: str) -> tuple[bytes, str, str] | None:
         """全局搜索 MinerU 图片（仅有图片 hash 时使用）。
 
         Returns:

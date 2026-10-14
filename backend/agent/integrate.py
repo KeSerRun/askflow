@@ -7,7 +7,7 @@ import os
 import threading
 
 from config.app_config import AppConfig  # noqa: F401  # 便于按名引用
-from config.paths import _project_root as _BACKEND_ROOT
+from config.paths import _project_root as _backend_root
 from infra.util.logger import logger
 
 from .checkpoint import CheckpointStore
@@ -33,10 +33,9 @@ class IntegratedSystem:
 
         self.data_store = container.history_service
         self.chat_client = container.chat_model
-        self.embed_client = container.embedder
         self.vector_store = container.vector_store
 
-        self.system_context = SystemContext(os.path.join(_BACKEND_ROOT, "prompts"))
+        self.system_context = SystemContext(os.path.join(_backend_root, "prompts"))
         self.cache = getattr(container, "cache", None)  # 与存储层共用的缓存实例
         self.object_store = getattr(container, "object_store", None)
 
@@ -120,7 +119,7 @@ class IntegratedSystem:
             return cancel_event.is_set()
 
         session_queue: _queue.Queue = _queue.Queue()
-        _DONE = object()
+        _done = object()
         state_flag = {"resumable": True}
 
         def _worker():
@@ -138,7 +137,7 @@ class IntegratedSystem:
                 logger.error(f"续跑异常: {e}")
                 session_queue.put({"type": "status", "status": "error", "error": str(e)})
             finally:
-                session_queue.put(_DONE)
+                session_queue.put(_done)
 
         t = threading.Thread(target=_worker, daemon=True)
         t.start()
@@ -154,7 +153,7 @@ class IntegratedSystem:
                     if not t.is_alive():
                         break
                     continue
-                if ev is _DONE:
+                if ev is _done:
                     break
                 if is_cancelled():
                     yield {"type": "status", "status": "cancelled"}
@@ -217,7 +216,8 @@ class IntegratedSystem:
             for h in raw:
                 self._append_history_item(messages, h)
 
-        logger.debug(f"get_history: raw={len(raw)} 条, 总字符 ~{sum(len(str(m.get('content', '') or '')) for m in messages)}, "
+        total_chars = sum(len(str(m.get('content', '') or '')) for m in messages)
+        logger.debug(f"get_history: raw={len(raw)} 条, 总字符 ~{total_chars}, "
                      f"返回 {len(messages)} 条消息")
 
         return messages
@@ -360,7 +360,7 @@ class IntegratedSystem:
 
         import queue as _queue
         session_queue = _queue.Queue()
-        _DONE = object()
+        _done = object()
 
         def _worker():
             try:
@@ -381,7 +381,7 @@ class IntegratedSystem:
                 logger.error(f"生成回答异常: {e}")
                 session_queue.put({"type": "status", "status": "error", "error": str(e)})
             finally:
-                session_queue.put(_DONE)
+                session_queue.put(_done)
 
         t = threading.Thread(target=_worker, daemon=True)
         t.start()
@@ -400,7 +400,7 @@ class IntegratedSystem:
                         logger.warning(f"工作线程已退出，session={session_id}")
                         break
                     continue
-                if ev is _DONE:
+                if ev is _done:
                     break
                 if is_cancelled():
                     yield {"type": "status", "status": "cancelled"}

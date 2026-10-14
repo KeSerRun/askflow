@@ -6,8 +6,9 @@ from fastapi import APIRouter, Depends, Query
 
 from core.deps import require_admin, user_service
 from infra.util.logger import logger
-from .dto import ChangeRoleBody, CreateUserBody, ResetPasswordBody
+
 from . import vo as views
+from .dto import ChangeRoleBody, CreateUserBody, ResetPasswordBody
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 

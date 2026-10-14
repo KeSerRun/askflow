@@ -27,12 +27,12 @@ from modules.auth import AuthService
 from modules.dashboard.service import DashboardService
 from modules.database import entity as _db_entity  # noqa: F401 注册 ORM 模型（chunk_parents 等）
 from modules.database.service import DatabaseService
+from modules.document.service import DocumentService
+from modules.health.service import HealthService
+from modules.history import HistoryService
 from modules.logger.db_handler import attach_application_db_logger
 from modules.logger.service import LogService, RequestLogService
 from modules.logger.stats import RequestStats
-from modules.document.service import DocumentService
-from modules.history import HistoryService
-from modules.health.service import HealthService
 from modules.query import QueryService
 from modules.session import SessionService
 from modules.tools import ToolService
@@ -99,13 +99,14 @@ def build_container(cfg: AppConfig) -> Container:
         cache = InMemoryCache()
 
     # ── 通用对象仓储（按 storage_backend 选具体后端，读缓存 + 写失效） ──
-    BackendRepo = MySQLRepo if cfg.storage_backend == "mysql" else SqliteRepo
-    repo = CachedRepo(BackendRepo(cfg.storage_db_url), cache)
+    backend_repo = MySQLRepo if cfg.storage_backend == "mysql" else SqliteRepo
+    repo = CachedRepo(backend_repo(cfg.storage_db_url), cache)
 
     # ── 工具定义（数据库为准）：先种子入内建工具，再装载到注册表 ──
     tool_service = ToolService(repo, data_dir=cfg.storage_data_dir)
     # 自定义工具源码目录注册为可导入包（custom_tools.*）
     from pathlib import Path as _Path
+
     from agent.tools.registry import register_custom_tools_package
     register_custom_tools_package(str(_Path(cfg.storage_data_dir) / "custom_tools"))
     tool_service.seed_builtins()

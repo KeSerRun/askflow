@@ -6,8 +6,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
-
+from typing import Any
 
 
 class RedisCache:
@@ -28,7 +27,7 @@ class RedisCache:
             raise ImportError("RedisCache 需要安装 redis 依赖: pip install redis") from e
         self._r = redis.from_url(url)
 
-    def get(self, key: str) -> Optional[Any]:
+    def get(self, key: str) -> Any | None:
         raw = self._r.get(key)
         if raw is None:
             return None

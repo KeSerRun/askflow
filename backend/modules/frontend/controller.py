@@ -25,7 +25,7 @@ _INDEX = conf.web_index_file
 def _load_index() -> str | None:
     """读取前端首页 HTML；未构建返回 None（每次请求实时读，构建后无需重启）。"""
     if os.path.exists(_INDEX):
-        with open(_INDEX, "r", encoding="utf-8") as f:
+        with open(_INDEX, encoding="utf-8") as f:
             return f.read()
     return None
 

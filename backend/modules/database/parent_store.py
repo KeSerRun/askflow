@@ -6,8 +6,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 
 class ChunkParentStore:
     """``chunk_parents`` 表读写（id=md5(父块全文)）。"""

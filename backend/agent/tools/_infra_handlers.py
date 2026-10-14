@@ -1,17 +1,20 @@
 """agent.tools._infra_handlers —— 工具 handler 实现（@tool 声明 + langchain 类型签名推导；辅助函数在 _common）。"""
 from __future__ import annotations
+
 from typing import Annotated
+
 from pydantic import Field
+
 from ._common import _GOAL_CACHE, _check_todo, _get_todolist, _set_todolist
 from ._context import current_tool_ctx, tool
-
 
 
 @tool('ask_user_for_clarification')
 def _exec_ask_clarification(
     question: Annotated[str, Field(description="向用户询问的具体问题")],
     options: Annotated[list[str] | None,
-                       Field(description="给用户的选择项（3-5 个建议答案，前端以选择框呈现并含自定义输入），可省略")] = None,
+                       Field(description="给用户的选择项（3-5 个建议答案，前端以选择框呈现并含自定义输入），"
+                                         "可省略")] = None,
 ) -> str:
     """需求不明确时向用户提问澄清：给出问题与可选答案，用户选择好后继续回答。"""
     picks = "\n".join(f"- {o}" for o in (options or []) if str(o).strip())
@@ -98,7 +101,10 @@ def _exec_set_todolist(
                      "按执行顺序排列，通常 3-8 项。执行阶段每完成一项调用 check_todo 勾选。")
     )] = [],
 ) -> str:
-    """规划阶段建立/更新任务清单（ToDoList）：把复杂任务拆成可勾选的步骤。完成后用 check_todo 逐项打勾，全部完成后汇报结果。"""
+    """规划阶段建立/更新任务清单（ToDoList）：把复杂任务拆成可勾选的步骤。
+
+    完成后用 check_todo 逐项打勾，全部完成后汇报结果。
+    """
     ctx = current_tool_ctx()
     lst = _set_todolist(ctx.session_id or "", items or [])
     if not lst:

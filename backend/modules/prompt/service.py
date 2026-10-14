@@ -15,7 +15,6 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Optional
 
 from agent.context import parse_frontmatter
 from core.app_errors import InvalidInput, NotFound
@@ -28,7 +27,7 @@ _STYLE_FILE_NAMES = ("SKILL.md", "skill.md")
 class PromptService:
     """Prompt 文件增删改查 + 热重载。"""
 
-    def __init__(self, prompts_dir: str, reloader: Optional[callable] = None):
+    def __init__(self, prompts_dir: str, reloader: callable | None = None):
         """初始化。
 
         Args:

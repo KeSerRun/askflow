@@ -49,7 +49,9 @@ def http_logs(
     user: dict = Depends(require_admin),
 ):
     """查询数据库中的 HTTP 调用记录（request_logs 表，按时间倒序）。"""
-    return json(log_service.http_logs(page=page, page_size=page_size, method=method, username=username, keyword=keyword))
+    return json(log_service.http_logs(
+        page=page, page_size=page_size, method=method, username=username, keyword=keyword,
+    ))
 
 
 @router.delete("/http/{log_id}")

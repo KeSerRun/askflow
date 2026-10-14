@@ -92,6 +92,7 @@
       :storage="documentUsage"
       :is-deleting="isDeleting"
       :parse-status="parseStatus"
+      :session-id="currentSessionId"
       @close="closeDocManager"
       @delete="confirmDeleteDocs"
       @open="openDocument"
@@ -218,7 +219,11 @@ const fetchDocuments = async () => {
       headers: { 'X-Session-ID': currentSessionId.value },
     })
     if (response.status === 200) {
-      documentList.value = (response.data.files || []).map((f) => f.name)
+      documentList.value = (response.data.files || []).map((f) => ({
+        name: f.name,
+        size: f.size || 0,
+        kind: f.kind || 'file',
+      }))
       if (response.data.usage) documentUsage.value = response.data.usage
     }
   } catch (error) {
@@ -273,10 +278,13 @@ const closeDocManager = () => {
 }
 
 // 双击文档: 直接下载（blob + <a download>），no 再依赖新标签预览/弹窗
+// 附件名可能带 query_img/ 前缀：按段编码，保留路径分隔符
+const encDocPath = (name) => String(name).split('/').map(encodeURIComponent).join('/')
+
 const openDocument = async (docName) => {
   try {
     const response = await axios.get(
-      `/api/session_files/file/${encodeURIComponent(docName)}`,
+      `/api/session_files/file/${encDocPath(docName)}`,
       {
         responseType: 'blob',
         headers: { 'X-Session-ID': currentSessionId.value },
@@ -285,7 +293,7 @@ const openDocument = async (docName) => {
     const url = URL.createObjectURL(response.data)
     const a = document.createElement('a')
     a.href = url
-    a.download = docName
+    a.download = String(docName).split('/').pop()
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -312,14 +320,15 @@ const deleteSelectedDocs = async (docsToDelete) => {
   try {
     await Promise.all(
       docsToDelete.map((name) =>
-        axios.delete(`/api/session_files/${encodeURIComponent(name)}`, {
+        axios.delete(`/api/session_files/${encDocPath(name)}`, {
           headers: { 'X-Session-ID': currentSessionId.value },
         })
       )
     )
-    documentList.value = documentList.value.filter(
-      (docName) => !docsToDelete.includes(docName)
-    )
+    const del = new Set(docsToDelete)
+    documentList.value = documentList.value.filter((doc) => !del.has(doc.name))
+    messages.value.push({ role: 'event', content: eventText('delete', docsToDelete), _key: nextMsgKey() })
+    throttleScroll()
     message.success('附件删除成功')
     await fetchDocuments()
   } catch (error) {
@@ -444,6 +453,18 @@ function cleanUserMessage(content = '') {
   return { role: 'user', content: text.slice(0, m.index), _attachments: attach }
 }
 
+// 事件条目（上传/删除附件、切换风格）→ 聊天列表中的操作提示文本
+function eventText(type, files = []) {
+  const names = Array.isArray(files) ? files : []
+  const head = names.slice(0, 3).join('、')
+  const suffix = names.length > 3 ? ' 等' : ''
+  if (type === 'upload') return `已上传附件：${head}${suffix}`
+  if (type === 'delete') return `已删除附件：${head}${suffix}`
+  if (type === 'delete_all') return '已清空全部附件'
+  if (type === 'style_change') return `切换回答风格：${names[0] || 'default'}`
+  return ''
+}
+
 const loadHistoryMessages = async (sessionId) => {
   try {
     const response = await axios.get(`/api/history/${sessionId}`)
@@ -452,8 +473,12 @@ const loadHistoryMessages = async (sessionId) => {
       const data = response.data
       const newMessages = []
       for (const msg of data.history || []) {
-        // 事件条目 (upload/delete) 不在聊天界面渲染, 仅供后端注入 LLM 上下文
-        if (msg.type === 'event') continue
+        // 事件条目：渲染为居中小字操作提示（同时后端已注入 LLM 上下文）
+        if (msg.type === 'event') {
+          const text = eventText(msg.event_type, msg.files)
+          if (text) newMessages.push({ role: 'event', content: text, _key: nextMsgKey() })
+          continue
+        }
         if (msg.type === 'turn') {
           // 完整对话回合：从 messages 数组中提取 user/assistant 消息
           for (const m of msg.messages || []) {
@@ -927,6 +952,8 @@ const handleFileUpload = async (file) => {
     if (res.data?.usage) documentUsage.value = res.data.usage
     await fetchDocuments()
     await fetchParseStatus()
+    messages.value.push({ role: 'event', content: eventText('upload', [file.name]), _key: nextMsgKey() })
+    throttleScroll()
     message.success(`${file.name} 已暂存到当前会话，正在解析…`)
     loadingBar.finish()
   } catch (error) {

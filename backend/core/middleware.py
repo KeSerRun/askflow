@@ -20,9 +20,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 
+from config import conf
 from core.concurrency import to_thread_safe
 from core.security import decode_access_token, extract_bearer
-from config import conf
 from infra.util.logger import log_http
 
 # 生产环境：调用记录只落"有问题"的请求（HTTP >=300），普通 2xx 不入库

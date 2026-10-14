@@ -11,18 +11,18 @@ OpenAIEmbedder  : 文本嵌入（自动分批）  → ports.Embedder
 from __future__ import annotations
 
 import os
-from typing import Iterable, Iterator, List, Optional
+from collections.abc import Iterable, Iterator
 
 from openai import OpenAI
 
-from infra.util.logger import logger
 from core.models import ChatResponse, ChatStreamEvent
+from infra.util.logger import logger
 
 # 思考内容的字段名：DeepSeek-R1 用 ``reasoning_content``，Ollama(Qwen3) 用 ``reasoning``
 _REASONING_FIELDS = ("reasoning_content", "reasoning")
 
 
-def _delta_field(delta, *names: str) -> Optional[str]:
+def _delta_field(delta, *names: str) -> str | None:
     """读取流式 delta 的字段值。
 
     兼容 OpenAI SDK 的两种承载方式：直接属性（``delta.x``）与 ``delta.model_extra['x']``
@@ -41,13 +41,13 @@ class OpenAIChatModel:
 
     def __init__(
         self,
-        api_key: Optional[str],
-        base_url: Optional[str],
+        api_key: str | None,
+        base_url: str | None,
         model: str,
         *,
         timeout: float = 60.0,
         max_retries: int = 3,
-        default_headers: Optional[dict] = None,
+        default_headers: dict | None = None,
     ):
         """初始化。
 
@@ -80,11 +80,11 @@ class OpenAIChatModel:
         self,
         messages: list[dict],
         *,
-        tools: Optional[list[dict]] = None,
+        tools: list[dict] | None = None,
         tool_choice: str = "auto",
         temperature: float = 0.3,
         max_tokens: int = 8192,
-        reasoning_effort: Optional[str] = None,
+        reasoning_effort: str | None = None,
     ) -> ChatResponse:
         """非流式对话（支持工具调用）。"""
         kwargs: dict = dict(
@@ -120,11 +120,11 @@ class OpenAIChatModel:
         self,
         messages: list[dict],
         *,
-        tools: Optional[list[dict]] = None,
+        tools: list[dict] | None = None,
         tool_choice: str = "auto",
         temperature: float = 0.3,
         max_tokens: int = 8192,
-        reasoning_effort: Optional[str] = None,
+        reasoning_effort: str | None = None,
     ) -> Iterator[ChatStreamEvent]:
         """流式对话（支持工具调用），产出领域事件 ChatStreamEvent。"""
         kwargs: dict = dict(
@@ -143,7 +143,7 @@ class OpenAIChatModel:
         resp = self._client.chat.completions.create(**kwargs)
 
         accumulated: dict = {}
-        finish_reason: Optional[str] = None
+        finish_reason: str | None = None
         try:
             for chunk in resp:
                 if not chunk.choices:
@@ -188,8 +188,8 @@ class OpenAIEmbedder:
 
     def __init__(
         self,
-        api_key: Optional[str],
-        base_url: Optional[str],
+        api_key: str | None,
+        base_url: str | None,
         model: str,
         dimension: int,
         *,
@@ -226,7 +226,7 @@ class OpenAIEmbedder:
     def dimension(self) -> int:
         return self._dimension
 
-    def embed(self, texts: Iterable[str], batch_size: int = 32) -> List[List[float]]:
+    def embed(self, texts: Iterable[str], batch_size: int = 32) -> list[list[float]]:
         """批量文本嵌入，自动分批。
 
         Args:
@@ -242,7 +242,7 @@ class OpenAIEmbedder:
 
         total = len(texts)
         num_batches = (total + batch_size - 1) // batch_size
-        out: List[List[float]] = []
+        out: list[list[float]] = []
 
         for i in range(0, total, batch_size):
             batch = texts[i: i + batch_size]
@@ -258,7 +258,7 @@ class OpenAIEmbedder:
 
         return out
 
-    def embed_image(self, data: bytes) -> List[float]:
+    def embed_image(self, data: bytes) -> list[float]:
         """图片嵌入（CLIP 图向量，与文本同一向量空间）。
 
         Args:

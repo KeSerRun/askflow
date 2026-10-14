@@ -188,8 +188,11 @@ class DatabaseService:
     def _segment_text(typ: str, block: dict) -> str:
         """取块的展示文本（与向量化逻辑口径一致）。"""
         from infra.adapters.pdf.mineru_impl import (
-            _SKIP_BLOCK_TYPES, _block_table_html, _block_text,
-            _runs_to_text, _table_html_to_md,
+            _SKIP_BLOCK_TYPES,
+            _block_table_html,
+            _block_text,
+            _runs_to_text,
+            _table_html_to_md,
         )
         if typ in _SKIP_BLOCK_TYPES:
             return _runs_to_text(block.get("content") or "")

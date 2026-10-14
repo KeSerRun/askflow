@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import os
 from datetime import datetime
-from typing import List
 
 from config import conf
-from infra.util.logger import logger
 from core.models import Document
+from infra.util.logger import logger
 
 from .mineru_impl import MinerULoader
 
@@ -92,7 +91,7 @@ def load_documents_from_file(file_path):
     return doc if doc else []
 
 
-def process_documents_from_dir(directory) -> List[Document]:
+def process_documents_from_dir(directory) -> list[Document]:
     """加载文档，每个 MinerU 原始块直接入库。
 
     对 text 类型块执行最短长度过滤和停用词过滤。

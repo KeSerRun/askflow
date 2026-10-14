@@ -9,8 +9,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from core.deps import auth_service, require_auth
-from .dto import Credentials
+
 from . import vo as views
+from .dto import Credentials
 
 router = APIRouter(prefix="/api", tags=["auth"])
 

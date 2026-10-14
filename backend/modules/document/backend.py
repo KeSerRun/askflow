@@ -22,7 +22,6 @@ import shutil
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Optional
 
 
 def _norm_key(rel: str) -> str:
@@ -58,7 +57,7 @@ def match_img_key(key: str, img_name: str) -> bool:
 class FileStore:
     """文档文件存储：仅对象存储的读写面。"""
 
-    def __init__(self, object_store: Optional[object] = None, tmp_root: str = ""):
+    def __init__(self, object_store: object | None = None, tmp_root: str = ""):
         """初始化。
 
         Args:
@@ -95,12 +94,12 @@ class FileStore:
 
     # ── 读 ──
 
-    def get_bytes(self, rel: str) -> Optional[bytes]:
+    def get_bytes(self, rel: str) -> bytes | None:
         if self.os is None:
             return None
         return self.os.get_bytes(self._key(rel))
 
-    def read_text(self, rel: str) -> Optional[str]:
+    def read_text(self, rel: str) -> str | None:
         data = self.get_bytes(rel)
         if data is None:
             return None
@@ -167,7 +166,7 @@ class FileStore:
 
     # ── 临时物化（对象代理：MinerU 解析需要真实文件路径时使用） ──
 
-    def local_materialize(self, rel: str) -> Optional[str]:
+    def local_materialize(self, rel: str) -> str | None:
         """返回对象对应的真实本地路径。
 
         - 适配器提供 ``local_path(key)``（本地型实现）时直接返回其路径；

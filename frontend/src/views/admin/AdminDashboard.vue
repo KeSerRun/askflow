@@ -159,6 +159,14 @@
 
       <!-- 请求统计 -->
       <n-card title="请求统计" :bordered="true" size="small" style="margin-top: 16px">
+        <template #header-extra>
+          <n-popconfirm :disabled="!hasRequestStats" @positive-click="resetRequestCounts">
+            <template #trigger>
+              <n-button size="tiny" quaternary type="error" :disabled="!hasRequestStats">重置次数</n-button>
+            </template>
+            确定将请求统计（总请求数 / 错误数 / 按方法）重置为 0？
+          </n-popconfirm>
+        </template>
         <template v-if="rs">
           <n-grid :cols="3" :x-gap="16" :y-gap="8">
             <n-grid-item>
@@ -273,6 +281,7 @@ async function refreshResources() {
 const errorCount = computed(() => store.dashboardData?.request_stats?.total_errors || 0)
 
 const rs = computed(() => store.dashboardData?.request_stats || null)
+const hasRequestStats = computed(() => !!rs.value?.total_requests)
 
 const successRateText = computed(() => {
   const t = rs.value?.total_requests || 0
@@ -357,6 +366,22 @@ async function resetToolCounts() {
     message.error(e?.message || '重置失败')
   } finally {
     resettingToolCounts.value = false
+  }
+}
+
+// 重置请求统计（缓存内累加值清零）
+const resettingRequestCounts = ref(false)
+async function resetRequestCounts() {
+  if (resettingRequestCounts.value) return
+  resettingRequestCounts.value = true
+  try {
+    const res = await store.resetRequestStats()
+    message.success((res && res.message) || '已重置请求统计')
+    await loadData()
+  } catch (e) {
+    message.error(e?.message || '重置失败')
+  } finally {
+    resettingRequestCounts.value = false
   }
 }
 

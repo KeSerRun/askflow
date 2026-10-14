@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
-
 import numpy as np
 
 from core.models import Document
@@ -131,7 +129,7 @@ class MilvusVectorStore:
 
     # ── 嵌入 ──
 
-    def _embed(self, texts: List[str]) -> np.ndarray:
+    def _embed(self, texts: list[str]) -> np.ndarray:
         vecs = self._embedder.embed(texts)
         arr = np.array(vecs, dtype=np.float32)
         if arr.size and arr.ndim == 2:
@@ -142,7 +140,7 @@ class MilvusVectorStore:
 
     # ── 入库 ──
 
-    def add_documents(self, documents: List[Document]) -> None:
+    def add_documents(self, documents: list[Document]) -> None:
         import hashlib
         from datetime import datetime
 
@@ -244,7 +242,7 @@ class MilvusVectorStore:
 
     # ── 管理 ──
 
-    def get_sources(self) -> List[str]:
+    def get_sources(self) -> list[str]:
         sources: set[str] = set()
         try:
             rows = self._client.query(
@@ -262,13 +260,13 @@ class MilvusVectorStore:
         self._client.delete(self._name, filter='doc_id != ""')
         self._client.flush(self._name)
 
-    def delete_by_sources(self, sources: List[str]) -> None:
+    def delete_by_sources(self, sources: list[str]) -> None:
         if not sources:
             return
         self._client.delete(self._name, filter=f'source in {sources!r}')
         self._client.flush(self._name)
 
-    def delete_by_doc_ids(self, doc_ids: List[str]) -> None:
+    def delete_by_doc_ids(self, doc_ids: list[str]) -> None:
         """按向量主键 doc_id 删除指定切块。"""
         ids = [str(i) for i in doc_ids or [] if str(i)]
         if not ids:
@@ -318,7 +316,7 @@ class MilvusVectorStore:
 
     # ── 兼容别名 ──
 
-    def get_documents(self) -> List[str]:
+    def get_documents(self) -> list[str]:
         return self.get_sources()
 
     def store_documents_from_dir(self, directory) -> None:
@@ -336,9 +334,9 @@ class MilvusVectorStore:
         query: str,
         top_k: int = 10,
         *,
-        source_filter: Optional[str] = None,
+        source_filter: str | None = None,
         chunk_filter: str = "mixed",
-    ) -> List[Document]:
+    ) -> list[Document]:
         top_k = top_k or self.default_top_k
         q_arr = self._embed([query])
         if q_arr.size == 0:
@@ -366,7 +364,7 @@ class MilvusVectorStore:
         if not res or not res[0]:
             return []
 
-        docs: List[Document] = []
+        docs: list[Document] = []
         seen: set[str] = set()
         for hit in res[0]:
             entity = (hit or {}).get("entity") or {}
@@ -396,9 +394,9 @@ class MilvusVectorStore:
         vector,
         top_k: int = 10,
         *,
-        source_filter: Optional[str] = None,
+        source_filter: str | None = None,
         chunk_filter: str = "mixed",
-    ) -> List[Document]:
+    ) -> list[Document]:
         """按给定向量检索（图搜文 / 任意同空间向量查询）。"""
         top_k = min(top_k or self.default_top_k, _QUERY_LIMIT)
         conds = []
@@ -422,7 +420,7 @@ class MilvusVectorStore:
         if not res or not res[0]:
             return []
 
-        docs: List[Document] = []
+        docs: list[Document] = []
         seen: set[str] = set()
         for hit in res[0]:
             entity = (hit or {}).get("entity") or {}

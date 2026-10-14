@@ -11,8 +11,8 @@ from __future__ import annotations
 from dataclasses import fields
 from typing import get_args, get_type_hints
 
-from config.app_config import AppConfig
 from config import FIELD_TO_ENV
+from config.app_config import AppConfig
 
 # 组前缀 → 中文分组名（用于前端分块）
 GROUP_LABELS = {
@@ -63,7 +63,6 @@ LABEL_MAP: dict[str, str] = {
     "STORAGE_DB_URL": "数据库连接串",
     # RETRIEVAL
     "RETRIEVAL_TOP_K": "检索返回条数 top_k",
-    "RETRIEVAL_CANDIDATE_K": "候选召回数 candidate_k",
     "RETRIEVAL_MIN_CHUNK": "最小切块字符数",
     "RETRIEVAL_STOP_WORDS": "检索停用词（逗号分隔）",
     # VECTOR / OBJECT
@@ -83,7 +82,6 @@ LABEL_MAP: dict[str, str] = {
     "AGENT_MAX_OUTPUT_CHARS": "单次输出最大字符数",
     "AGENT_CHECKPOINT_ENABLED": "启用 Agent 检查点",
     # CONTEXT
-    "CONTEXT_HISTORY_MAX": "历史对话保留条数",
     "CONTEXT_WINDOW_CHARS": "上下文窗口字符数",
     "CONTEXT_INPUT_RATIO": "输入占比",
     "CONTEXT_COMPRESSION_RATIO": "压缩比例",

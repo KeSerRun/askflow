@@ -3,7 +3,7 @@
 import unittest
 from dataclasses import fields
 
-from config import AppConfig, FIELD_TO_ENV, ENV_TO_FIELD
+from config import ENV_TO_FIELD, FIELD_TO_ENV, AppConfig
 
 
 class EnvKeysTest(unittest.TestCase):

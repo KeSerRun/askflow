@@ -36,6 +36,11 @@ export const useAdminStore = defineStore('admin', () => {
     return res.data
   }
 
+  async function resetRequestStats() {
+    const res = await apiCall(() => axios.post('/api/admin/dashboard/reset_request_stats'))
+    return res.data
+  }
+
   // --- 健康检查 ---
   const healthData = ref(null)
   const healthLoading = ref(false)
@@ -363,7 +368,7 @@ export const useAdminStore = defineStore('admin', () => {
   return {
     loading, error,
     dashboardData, fetchDashboard,
-    serverResources, fetchServerResources,
+    serverResources, fetchServerResources, resetRequestStats,
     healthData, healthLoading, fetchHealth,
     configData, configSchema, fetchConfig, fetchConfigSchema, updateConfig, restartBackend,
     usersData, fetchUsers, createUser, deleteUser, changeUserRole, resetUserPassword,

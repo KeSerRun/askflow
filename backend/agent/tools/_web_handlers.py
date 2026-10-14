@@ -1,13 +1,25 @@
 """agent.tools._web_handlers —— 工具 handler 实现（@tool 声明 + langchain 类型签名推导；辅助函数在 _common）。"""
 from __future__ import annotations
-from typing import Annotated
-from pydantic import Field
-from ._common import _cache_get, _cache_set, _cfg, _search_searxng, _try_jina_reader, _try_raw_html, _try_readability, _validate_url_chain
-from ._context import current_tool_ctx, tool
-from datetime import datetime as _dt
+
 import re as _re
+from datetime import datetime as _dt
+from typing import Annotated
+
+from pydantic import Field
+
 from infra.util.logger import logger
 
+from ._common import (
+    _cache_get,
+    _cache_set,
+    _cfg,
+    _search_searxng,
+    _try_jina_reader,
+    _try_raw_html,
+    _try_readability,
+    _validate_url_chain,
+)
+from ._context import current_tool_ctx, tool
 
 
 @tool('read_url')

@@ -14,7 +14,9 @@ from __future__ import annotations
 from contextlib import contextmanager, nullcontext
 from functools import wraps
 
-from sqlalchemy import delete as sa_delete, func, or_, select, update as sa_update
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, or_, select
+from sqlalchemy import update as sa_update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
 

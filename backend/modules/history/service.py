@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from .entity import HistoryEntry
 
@@ -24,7 +23,7 @@ class HistoryService:
 
     # ── 读取 ──
 
-    def get_session_history(self, session_id: str) -> Optional[list]:
+    def get_session_history(self, session_id: str) -> list | None:
         """读取会话的活跃历史（归档不含）；无数据返回 None。"""
         entries = self._repo.find("history", {"session_id": session_id, "archived": 0}, order_by="id")
         if not entries:

@@ -3,15 +3,15 @@
 全部接口要求管理员（``require_admin``）。业务在 ``DatabaseService``。
 """
 
-from typing import List
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from core.app_errors import AppError
 from core.concurrency import to_thread
 from core.deps import database_service, require_admin
-from .dto import MdViewActionBody
+
 from . import vo as views
+from .dto import MdViewActionBody
 
 router = APIRouter(prefix="/api/admin/database", tags=["admin"])
 
@@ -87,7 +87,7 @@ def parent_text(
 
 
 @router.post("/upload")
-async def upload_system(files: List[UploadFile] = File(...), user: dict = Depends(require_admin)):
+async def upload_system(files: list[UploadFile] = File(...), user: dict = Depends(require_admin)):
     """上传系统级文档（后台向量化，立即返回任务 ID）。"""
     files_data = [(f.filename, await f.read(), f.content_type) for f in files]
     return views.ok(await to_thread(database_service.upload_system, files_data))

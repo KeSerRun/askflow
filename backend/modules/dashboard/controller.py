@@ -2,7 +2,8 @@
 
 from fastapi import APIRouter, Depends
 
-from core.deps import dashboard_service, require_admin, request_stats, tool_service
+from core.deps import dashboard_service, request_stats, require_admin, tool_service
+
 from . import vo as views
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
@@ -22,3 +23,10 @@ def get_dashboard(user: dict = Depends(require_admin)):
 def server_resources(user: dict = Depends(require_admin)):
     """服务器资源使用情况（CPU / RAM，psutil 采样）。"""
     return views.ok(dashboard_service.server_resources())
+
+
+@router.post("/dashboard/reset_request_stats")
+def reset_request_stats(user: dict = Depends(require_admin)):
+    """重置请求统计（缓存内累加值清零；不影响 ``request_logs`` 明细）。"""
+    request_stats.reset()
+    return views.ok({"message": "请求统计已重置"})

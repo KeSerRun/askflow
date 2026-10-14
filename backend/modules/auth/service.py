@@ -14,7 +14,6 @@ from __future__ import annotations
 import hashlib
 import secrets
 import time
-from typing import Optional
 
 import jwt
 
@@ -24,6 +23,7 @@ from core.app_errors import (
     InvalidRefreshToken,
     UsernameAlreadyExists,
 )
+
 from .entity import AuthenticatedUser, RefreshToken
 
 REFRESH_COLLECTION = "refresh_tokens"
@@ -137,17 +137,13 @@ class AuthService:
             return 0
         return self._store.delete_where(REFRESH_COLLECTION, {"username": rows[0].username})
 
-    def decode(self, token: str) -> Optional[dict]:
+    def decode(self, token: str) -> dict | None:
         """校验并解析 access token；失败或非 access 类型返回 None。"""
         try:
             payload = jwt.decode(token.encode("utf-8"), self._secret, algorithms=[self._algorithm])
         except jwt.PyJWTError:
             return None
         return payload if payload.get("type") == "access" else None
-
-    def revoke_user(self, username: str) -> int:
-        """吊销某用户所有 refresh 令牌（改密/封禁等场景）。"""
-        return self._store.delete_where(REFRESH_COLLECTION, {"username": username})
 
     # ── 内部 ──
 

@@ -51,8 +51,10 @@ class CachedVectorStoreTest(unittest.TestCase):
         self.assertEqual(len(second), 3)
 
     def test_sources_and_count_cached(self):
-        self.cached.get_sources(); self.cached.get_sources()
-        self.cached.count(); self.cached.count()
+        self.cached.get_sources()
+        self.cached.get_sources()
+        self.cached.count()
+        self.cached.count()
         self.assertEqual(self.store.calls["sources"], 1)
         self.assertEqual(self.store.calls["count"], 1)
 

@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 
 @dataclass
@@ -36,7 +36,7 @@ class ChatResponse:
 
     content: str = ""
     tool_calls: list[dict] = field(default_factory=list)
-    finish_reason: Optional[str] = None
+    finish_reason: str | None = None
 
 
 @dataclass
@@ -53,20 +53,20 @@ class ChatStreamEvent:
     type: str
     text: str = ""
     calls: list[dict] = field(default_factory=list)
-    reason: Optional[str] = None
+    reason: str | None = None
 
     @classmethod
-    def content(cls, text: str) -> "ChatStreamEvent":
+    def content(cls, text: str) -> ChatStreamEvent:
         return cls(type="content", text=text)
 
     @classmethod
-    def reasoning(cls, text: str) -> "ChatStreamEvent":
+    def reasoning(cls, text: str) -> ChatStreamEvent:
         return cls(type="reasoning", text=text)
 
     @classmethod
-    def tool_calls(cls, calls: list[dict]) -> "ChatStreamEvent":
+    def tool_calls(cls, calls: list[dict]) -> ChatStreamEvent:
         return cls(type="tool_calls", calls=calls)
 
     @classmethod
-    def finish(cls, reason: Optional[str] = None) -> "ChatStreamEvent":
+    def finish(cls, reason: str | None = None) -> ChatStreamEvent:
         return cls(type="finish", reason=reason)

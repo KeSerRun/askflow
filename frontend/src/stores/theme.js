@@ -12,12 +12,6 @@ export const useThemeStore = defineStore('theme', () => {
         mode.value = mode.value === 'dark' ? 'light' : 'dark'
     }
 
-    const set = (m) => {
-        if (m === 'light' || m === 'dark') {
-            mode.value = m
-        }
-    }
-
     // 将 <html> 的 data-theme 属性与 mode 同步
     function applyTheme(val) {
         document.documentElement.setAttribute('data-theme', val)
@@ -28,7 +22,7 @@ export const useThemeStore = defineStore('theme', () => {
         applyTheme(val)
     }, { immediate: true })
 
-    return { mode, isDark, toggle, set }
+    return { mode, isDark, toggle }
 }, {
     persist: {
         key: 'theme-store',

@@ -18,8 +18,9 @@ import base64
 import json
 import re
 import time
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
 import requests
 
@@ -194,7 +195,7 @@ def _strip_json_base64(work_dir: Path, img_paths: list | None = None) -> int:
     return removed
 
 
-def _render_document_text(pages: list, doc_title: str = "") -> str:
+def _render_document_text(pages: list) -> str:
     """把 middle_json 的 pages/blocks 渲染成纯文本（供 read_knowledge_base_document / 关键词检索）。
 
     跳过页眉/页脚/页码；标题块 → ``# 标题``；表格 → Markdown 表格；
@@ -706,7 +707,7 @@ class MinerULoader:
             # 用 middle_json 渲染纯文本供全文阅读/检索，MinIO 不再保留带内联编码的 md
             try:
                 (out_dir / f"{path.stem}.txt").write_text(
-                    _render_document_text(content.get("pages") or [], path.stem),
+                    _render_document_text(content.get("pages") or []),
                     encoding="utf-8",
                 )
             except OSError:

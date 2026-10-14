@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from core.app_errors import AppError
 from core.deps import prompt_service, require_admin
+
 from .dto import PromptContentBody
 
 router = APIRouter(prefix="/api/admin/prompts", tags=["admin"])

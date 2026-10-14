@@ -6,14 +6,13 @@ handler 模块（_kb/_web/_infra）只保留 @tool 工具入口，辅助从本�
 
 from __future__ import annotations
 
-from core.models import Document
-from pathlib import Path
 import html as _html
 import re as _re
-from infra.util.logger import logger
 import urllib.parse
-from typing import List, Optional
+from pathlib import Path
 
+from core.models import Document
+from infra.util.logger import logger
 from modules.document.backend import match_img_key
 
 SYSTEM_PARTITION = "__system__"
@@ -52,7 +51,7 @@ def _format_chunk(idx: int, chunk: Document) -> str:
     return f"{header}\n{body}"
 
 
-def format_retrieved_chunks(chunks: List[Document]) -> str:
+def format_retrieved_chunks(chunks: list[Document]) -> str:
     """将一组检索块拼接为完整上下文文本，并附 read_chunk_context 调用提示。"""
     if not chunks:
         return ""
@@ -288,7 +287,7 @@ def rrf_rerank(
     ranked_results: list[tuple[int, int, Document]],
     k: int = _RRF_K_DEFAULT,
     top_n: int | None = None,
-) -> List[Document]:
+) -> list[Document]:
     """Reciprocal Rank Fusion 重排。
 
     将多个 query 的检索结果按 RRF 算法融合：同一 chunk 在多个 query 中排名越高，
@@ -442,10 +441,10 @@ def _hybrid_retrieve(
     ctx,
     texts: list[str],
     image_refs: list[str],
-    retrieval_top_k: Optional[int] = None,
-    top_n: Optional[int] = None,
+    retrieval_top_k: int | None = None,
+    top_n: int | None = None,
     chunk_filter: str = "mixed",
-) -> List[Document]:
+) -> list[Document]:
     """多模态混合检索：文本与图片各自向量化检索，按 RRF 重排融合。
 
     - 每个文本 query → ``search``（文本嵌入）；

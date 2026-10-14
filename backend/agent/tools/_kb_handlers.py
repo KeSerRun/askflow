@@ -1,16 +1,30 @@
 """agent.tools._kb_handlers —— 工具 handler 实现（@tool 声明 + langchain 类型签名推导；辅助函数在 _common）。"""
 from __future__ import annotations
-from typing import Annotated
-from pydantic import Field
-from ._common import (_cache_get, _cache_set, _cfg, _get_file_stats,
-                      _list_session_resources, _list_session_docs,
-                      _IMAGE_EXTS, _hybrid_retrieve, _read_system_text,
-                      _read_session_text, _read_doc_text, replace_img_placeholders,
-                      _resolve_image_bytes, format_retrieved_chunks)
-from ._context import current_tool_ctx, tool
-from infra.util.logger import logger
-from pathlib import Path
 
+from pathlib import Path
+from typing import Annotated
+
+from pydantic import Field
+
+from infra.util.logger import logger
+
+from ._common import (
+    _IMAGE_EXTS,
+    _cache_get,
+    _cache_set,
+    _cfg,
+    _get_file_stats,
+    _hybrid_retrieve,
+    _list_session_docs,
+    _list_session_resources,
+    _read_doc_text,
+    _read_session_text,
+    _read_system_text,
+    _resolve_image_bytes,
+    format_retrieved_chunks,
+    replace_img_placeholders,
+)
+from ._context import current_tool_ctx, tool
 
 
 @tool('search_knowledge_base', concurrent_safe=True)
@@ -21,9 +35,13 @@ def _exec_search_kb(
                       Field(description="图片引用（MinIO 对象键或 /api/documents/image/... 直链），最多 5 个；"
                                          "可空（仅文本检索时省略）")] = None,
     top_k: Annotated[int | None, Field(description="返回结果数，默认 10，留空用默认")] = 10,
-    mode: Annotated[str, Field(description="检索输出作用域：mixed（混合，默认）/ text（只返回文本块）/ image（只返回图片块）")] = "mixed",
+    mode: Annotated[str, Field(
+        description="检索输出作用域：mixed（混合，默认）/ text（只返回文本块）/ image（只返回图片块）")] = "mixed",
 ) -> str:
-    """多模态混合检索知识库：接收文本列表与图片引用列表，各自向量化后做混合检索并按 RRF 重排，返回相关文本片段与图片直链。"""
+    """多模态混合检索知识库：接收文本列表与图片引用列表，各自向量化后做混合检索并按 RRF 重排。
+
+    返回相关文本片段与图片直链。
+    """
     ctx = current_tool_ctx()
     mode = (mode or "mixed").strip().lower()
     if mode not in ("mixed", "text", "image"):

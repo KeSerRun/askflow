@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Optional
-
+from typing import Any
 
 
 class InMemoryCache:
@@ -15,7 +14,7 @@ class InMemoryCache:
         self._data: dict[str, tuple[Any, float]] = {}
         self._lock = threading.Lock()
 
-    def get(self, key: str) -> Optional[Any]:
+    def get(self, key: str) -> Any | None:
         with self._lock:
             entry = self._data.get(key)
             if entry is None:

@@ -13,12 +13,13 @@ import os
 import re
 from datetime import datetime
 
+from sqlalchemy import inspect as _sa_inspect
+from sqlalchemy import text as _sa_text
+
 from agent.tools.registry import BUILTIN_TOOLS, build_handler
 from core.app_errors import InvalidInput, NotFound
 
 from .entity import AgentTool
-from sqlalchemy import inspect as _sa_inspect
-from sqlalchemy import text as _sa_text
 
 _CUSTOM_TOOLS_PKG = "custom_tools"
 _MODULE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -62,9 +63,10 @@ class ToolService:
                     "ALTER TABLE agent_tools ADD COLUMN call_count INTEGER DEFAULT 0"
                 ))
             if "output_parameters" in cols:
+                # SQLite 旧版不支持 DROP COLUMN：失败仅告警
                 try:
                     conn.execute(_sa_text("ALTER TABLE agent_tools DROP COLUMN output_parameters"))
-                except Exception as e:  # noqa: BLE001（SQLite 旧版不支持 DROP COLUMN 时仅告警）
+                except Exception as e:  # noqa: BLE001
                     from infra.util.logger import logger
                     logger.warning(f"清理 output_parameters 列失败（忽略，已不再使用）: {e}")
 
@@ -81,7 +83,10 @@ class ToolService:
             if rows:
                 # 迁移修复：内建行与声明不一致（模块/并发安全/参数 schema/描述）→ 同步为声明定义
                 stale_module = (rows[0].handler_module or "") != (spec["module"] or "")
-                stale_conc = bool(getattr(rows[0], "concurrent_safe", False)) != bool(spec.get("concurrent_safe", False))
+                stale_conc = (
+                    bool(getattr(rows[0], "concurrent_safe", False))
+                    != bool(spec.get("concurrent_safe", False))
+                )
                 stale_params = (rows[0].parameters or "") != json.dumps(spec["parameters"], ensure_ascii=False)
                 stale_desc = (rows[0].description or "") != (spec["description"] or "")
                 if stale_module or stale_conc or stale_params or stale_desc:

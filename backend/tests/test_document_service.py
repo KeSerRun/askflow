@@ -5,8 +5,9 @@ import shutil
 import tempfile
 import unittest
 
-from core.app_errors import QuotaExceeded
 from fake_object_store import LocalDirObjectStore
+
+from core.app_errors import QuotaExceeded
 from modules.document.service import DocumentService
 
 

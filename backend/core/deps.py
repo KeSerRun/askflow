@@ -10,9 +10,8 @@ system 基于组合根容器组装；应用服务按名取出。
 
 from fastapi import Depends, HTTPException, Request
 
-from core.security import extract_bearer
 from core.compositor import get_container
-
+from core.security import extract_bearer
 
 # ── 全局系统实例（Agent 引擎，由组合根装配为单例） ──
 system = get_container().get("system")
@@ -21,6 +20,7 @@ system = get_container().get("system")
 auth_service = get_container().get("auth_service")
 document_service = get_container().get("document_service")
 session_service = get_container().get("session_service")
+history_service = get_container().get("history_service")
 user_service = get_container().get("user_service")
 dashboard_service = get_container().get("dashboard_service")
 query_service = get_container().get("query_service")

@@ -2,7 +2,7 @@
 
 import unittest
 
-from agent.tools.registry import ToolRegistry, build_handler
+from agent.tools.registry import ToolRegistry
 from infra.adapters.storage import SqliteRepo
 from modules.tools import ToolService
 

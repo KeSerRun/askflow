@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from core.pagination import paginate_query
+
 from .entity import RequestLog
 
 

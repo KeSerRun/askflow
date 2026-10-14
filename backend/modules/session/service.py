@@ -8,10 +8,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from core.app_errors import Conflict, SessionAccessDenied  # noqa: F401
 from core.pagination import paginate_query
+
 from .entity import Session
 
 
@@ -19,7 +19,7 @@ class SessionService:
     """会话与历史的用例编排。"""
 
     def __init__(self, repo: object, history: object, *,
-                 preview_chars: int = 40, cleanup: Optional[callable] = None):
+                 preview_chars: int = 40, cleanup: callable | None = None):
         """初始化。
 
         Args:
@@ -95,7 +95,7 @@ class SessionService:
 
     # ── 历史 ──
 
-    def get_history(self, session_id: str, user_id: int | None) -> Optional[list]:
+    def get_history(self, session_id: str, user_id: int | None) -> list | None:
         """读取会话历史（仅限本人）。"""
         self._assert_owned(session_id, user_id)
         return self._history.get_session_history(session_id)
@@ -138,7 +138,7 @@ class SessionService:
             page=page, page_size=page_size, key="items", serialize=_row,
         )
 
-    def admin_get_history(self, session_id: str) -> Optional[list]:
+    def admin_get_history(self, session_id: str) -> list | None:
         """管理员读取任意会话的历史。"""
         return self._history.get_session_history(session_id)
 

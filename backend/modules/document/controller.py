@@ -8,8 +8,6 @@
 系统文档的 MinerU 解析 + 向量化由管理端 ``/api/admin/database/upload`` 触发。
 """
 
-from typing import List
-
 import re as _re
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
@@ -17,10 +15,12 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from core.concurrency import to_thread
 from core.deps import (
     document_service,
+    history_service,
     require_auth,
     require_media_auth,
     require_session_id,
 )
+
 from . import vo as views
 
 router = APIRouter(prefix="/api", tags=["documents"])
@@ -50,7 +50,7 @@ def serve_root_image(request: Request, img_name: str, token: str = Query(None)):
 
 @router.post("/session_files/upload")
 async def upload_session_files(
-    files: List[UploadFile] = File(...),
+    files: list[UploadFile] = File(...),
     session_id: str = Depends(require_session_id),
     user: dict = Depends(require_auth),
 ):
@@ -65,9 +65,11 @@ async def upload_session_files(
     saved = await to_thread(
         document_service.save_session_files, user["user_id"], session_id, pairs
     )
-    document_service.schedule_session_parse(
-        user["user_id"], session_id, [s["filename"] for s in saved]
-    )
+    names = [s["filename"] for s in saved]
+    document_service.schedule_session_parse(user["user_id"], session_id, names)
+    # 记录上传事件：聊天列表可见 + 注入 LLM 上下文（<operation：upload files: ...>）
+    if names:
+        await to_thread(history_service.insert_session_event, session_id, "upload", names)
     return views.session_files(
         saved,
         document_service.session_usage(user["user_id"], session_id),
@@ -103,6 +105,7 @@ def delete_session_file(
 ):
     """删除当前会话里的某个附件。"""
     document_service.delete_session_file(user["user_id"], session_id, filename)
+    history_service.insert_session_event(session_id, "delete", [filename])
     return views.session_file_deleted(filename)
 
 
@@ -112,7 +115,10 @@ def clear_session_files(
     user: dict = Depends(require_auth),
 ):
     """清空当前会话的全部附件。"""
+    names = [f["name"] for f in document_service.list_session_files(user["user_id"], session_id)]
     document_service.clear_session_files(user["user_id"], session_id)
+    if names:
+        history_service.insert_session_event(session_id, "delete_all", names)
     return views.session_files_cleared()
 
 

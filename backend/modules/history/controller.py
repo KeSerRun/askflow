@@ -6,8 +6,9 @@
 from fastapi import APIRouter, Depends
 
 from core.deps import require_auth, session_service
-from .dto import SessionIdBody
+
 from . import vo as views
+from .dto import SessionIdBody
 
 router = APIRouter(prefix="/api", tags=["history"])
 

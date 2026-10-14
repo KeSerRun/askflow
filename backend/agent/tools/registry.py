@@ -18,11 +18,10 @@ from __future__ import annotations
 import importlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, List, Optional
 
 from infra.util.logger import logger
-
 
 # ── 数据类定义 ──
 
@@ -38,15 +37,15 @@ class ToolContext:
         session_id: 当前会话 ID。
     """
     vector_store: object
-    partition: Optional[str] = None
-    data_store: Optional[object] = None
+    partition: str | None = None
+    data_store: object | None = None
     session_id: str = ""
     # 运行时注入（避免 handler 读全局 conf）：对象存储 / 配置对象 / 缓存
-    object_store: Optional[object] = None
-    config: Optional[object] = None
-    cache: Optional[object] = None
+    object_store: object | None = None
+    config: object | None = None
+    cache: object | None = None
     # 工作流路由（read_workflow 等需要）
-    workflow_router: Optional[object] = None
+    workflow_router: object | None = None
 
 
 @dataclass
@@ -100,7 +99,7 @@ class ToolRegistry:
         self._concurrent_safe: set[str] = set()   # 并发安全名单（随工具定义注册，DB 驱动）
         self.call_counts: dict[str, int] = {}
         self._external_lookup_counts: dict[str, int] = {}
-        self._on_call: Optional[Callable[[str], None]] = None   # 调用后回调（持久化计数）
+        self._on_call: Callable[[str], None] | None = None   # 调用后回调（持久化计数）
 
     def register(
         self,
@@ -138,11 +137,11 @@ class ToolRegistry:
         return tool
 
     @property
-    def schemas(self) -> List[dict]:
+    def schemas(self) -> list[dict]:
         """获取所有已注册工具的 OpenAI 兼容 schema 列表。"""
         return [t.schema for t in self._tools.values()]
 
-    def get(self, name: str) -> Optional[ToolDef]:
+    def get(self, name: str) -> ToolDef | None:
         """根据工具名称查找已注册的工具定义。"""
         return self._tools.get(name)
 

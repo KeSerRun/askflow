@@ -6,7 +6,7 @@
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 
 from core.concurrency import to_thread
-from core.deps import require_auth, query_service
+from core.deps import query_service, require_auth
 
 from . import vo as views
 from .dto import QueryBody, ResumeBody, SessionIdBody

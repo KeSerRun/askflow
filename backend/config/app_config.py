@@ -35,7 +35,6 @@ class AppConfig:
 
     # ── 检索 ──
     retrieval_top_k: int
-    retrieval_candidate_k: int
     retrieval_min_chunk: int
     retrieval_stop_words: list
 
@@ -66,7 +65,6 @@ class AppConfig:
     embed_health_url: str | None
 
     # ── 治理 ──
-    context_history_max: int
     context_window_chars: int
     context_input_ratio: float
     context_compression_ratio: float

@@ -4,11 +4,11 @@
 """
 
 import hashlib
-import uuid
 import unittest
+import uuid
 
-from infra.adapters.vector import MilvusVectorStore
 from core.models import Document
+from infra.adapters.vector import MilvusVectorStore
 
 _URI = "http://127.0.0.1:19530"
 

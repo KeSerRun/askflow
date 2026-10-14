@@ -62,31 +62,39 @@
       <n-scrollbar v-else style="max-height: 44vh">
         <n-checkbox-group v-model:value="selected">
           <div class="doc-list">
-            <label
-              v-for="docName in pagedDocs"
-              :key="docName"
+            <div
+              v-for="doc in pagedDocs"
+              :key="doc.name"
               class="doc-item"
-              :class="{ checked: selected.includes(docName) }"
+              :class="{ checked: selected.includes(doc.name) }"
               title="双击打开 / 下载"
-              @dblclick.prevent="$emit('open', docName)"
+              @dblclick="$emit('open', doc.name)"
             >
-              <n-checkbox :value="docName" />
+              <n-checkbox :value="doc.name" />
+              <img
+                v-if="doc.kind === 'image' && thumbs[doc.name]"
+                :src="thumbs[doc.name]"
+                class="doc-thumb"
+                alt=""
+              />
               <n-icon
+                v-else
                 :size="20"
-                :component="DocumentTextOutline"
+                :component="doc.kind === 'image' ? ImageOutline : DocumentTextOutline"
                 style="color: var(--color-primary); margin-left: 4px"
               />
-              <span class="doc-name">{{ docName }}</span>
+              <span class="doc-name">{{ displayName(doc.name) }}</span>
+              <n-text depth="3" class="doc-size">{{ fmtSize(doc.size) }}</n-text>
               <n-tag
-                v-if="parseInfo(docName)"
-                :type="parseInfo(docName).tag"
-                :title="parseInfo(docName).error || ''"
+                v-if="parseInfo(doc.name)"
+                :type="parseInfo(doc.name).tag"
+                :title="parseInfo(doc.name).error || ''"
                 size="small"
                 :bordered="false"
               >
-                {{ parseInfo(docName).text }}
+                {{ parseInfo(doc.name).text }}
               </n-tag>
-            </label>
+            </div>
           </div>
         </n-checkbox-group>
       </n-scrollbar>
@@ -129,7 +137,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onBeforeUnmount } from 'vue'
 import {
   NModal,
   NCheckbox,
@@ -145,7 +153,8 @@ import {
   NProgress,
   NTag,
 } from 'naive-ui'
-import { DocumentTextOutline, TrashOutline, SearchOutline, RefreshOutline } from '@vicons/ionicons5'
+import { DocumentTextOutline, ImageOutline, TrashOutline, SearchOutline, RefreshOutline } from '@vicons/ionicons5'
+import axios from '@/http/interceptor'
 
 const props = defineProps({
   isOpen: { type: Boolean, default: false },
@@ -153,6 +162,7 @@ const props = defineProps({
   storage: { type: Object, default: () => ({ current_mb: 0, max_mb: 0, limit_enabled: false }) },
   isDeleting: { type: Boolean, default: false },
   parseStatus: { type: Object, default: () => ({}) },
+  sessionId: { type: String, default: '' },
 })
 
 const emit = defineEmits(['close', 'delete', 'open', 'refresh'])
@@ -200,7 +210,7 @@ const storageBarColor = computed(() => {
 const filteredDocs = computed(() => {
   const q = searchQuery.value.trim().toLowerCase()
   if (!q) return props.documents
-  return props.documents.filter((name) => name.toLowerCase().includes(q))
+  return props.documents.filter((d) => (d.name || '').toLowerCase().includes(q))
 })
 
 // 分页
@@ -209,6 +219,55 @@ const totalPages = computed(() => Math.ceil(filteredDocs.value.length / pageSize
 const pagedDocs = computed(() => {
   const start = (currentPage.value - 1) * pageSize.value
   return filteredDocs.value.slice(start, start + pageSize.value)
+})
+
+// ── 展示辅助 ──
+function displayName(name) {
+  const s = String(name || '')
+  return s.includes('/') ? s.split('/').pop() : s
+}
+
+function fmtSize(bytes) {
+  const n = Number(bytes) || 0
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
+// 图片缩略图：<img> 无法带自定义鉴权头，故用带头的请求取字节再转 objectURL
+const thumbs = ref({})   // name -> objectURL（'' 表示加载中/失败）
+const thumbUrls = []
+
+function encPath(name) {
+  return String(name).split('/').map(encodeURIComponent).join('/')
+}
+
+async function loadThumb(name) {
+  if (!props.sessionId || thumbs.value[name] !== undefined) return
+  thumbs.value[name] = ''
+  try {
+    const res = await axios.get(`/api/session_files/file/${encPath(name)}`, {
+      responseType: 'blob',
+      headers: { 'X-Session-ID': props.sessionId },
+    })
+    const url = URL.createObjectURL(res.data)
+    thumbs.value[name] = url
+    thumbUrls.push(url)
+  } catch (e) {
+    thumbs.value[name] = ''
+  }
+}
+
+watch(
+  () => pagedDocs.value,
+  (docs) => {
+    for (const d of docs) if (d.kind === 'image') loadThumb(d.name)
+  },
+  { immediate: true }
+)
+
+onBeforeUnmount(() => {
+  for (const u of thumbUrls) URL.revokeObjectURL(u)
 })
 
 function onSizeChange(size) {
@@ -268,6 +327,7 @@ const handleDelete = () => {
   cursor: pointer;
   transition: all 0.15s ease;
   background-color: transparent;
+  user-select: none;
 }
 
 .doc-item:hover {
@@ -287,6 +347,20 @@ const handleDelete = () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.doc-size {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.doc-thumb {
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  object-fit: cover;
+  margin-left: 4px;
+  flex-shrink: 0;
 }
 
 .pagination-row {

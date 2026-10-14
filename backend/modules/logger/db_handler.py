@@ -10,6 +10,7 @@ import logging
 from datetime import datetime
 
 from config import conf
+
 from .entity import AppLog
 
 

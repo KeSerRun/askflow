@@ -7,7 +7,8 @@
 
 from __future__ import annotations
 
-from sqlalchemy import inspect as _sa_inspect, text as _sa_text
+from sqlalchemy import inspect as _sa_inspect
+from sqlalchemy import text as _sa_text
 
 
 def _raw_engine(repo):

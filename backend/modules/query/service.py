@@ -14,8 +14,8 @@
 
 from __future__ import annotations
 
-import threading
 import json
+import threading
 from collections.abc import Iterator
 
 from core.app_errors import Conflict

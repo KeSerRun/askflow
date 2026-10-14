@@ -20,7 +20,9 @@
       :key="msg._key || index"
       :class="['message', msg.role]"
     >
-      <div class="avatar-wrap">
+      <!-- 系统事件（上传/删除附件等）：居中小字提示 -->
+      <div v-if="msg.role === 'event'" class="event-note">{{ msg.content }}</div>
+      <div v-if="msg.role !== 'event'" class="avatar-wrap">
         <n-avatar
           v-if="msg.role === 'user'"
           round
@@ -39,7 +41,7 @@
         </n-avatar>
       </div>
 
-      <div class="bubble">
+      <div v-if="msg.role !== 'event'" class="bubble">
         <template v-if="msg.role === 'user'">
           <div class="user-content">{{ msg.content }}</div>
           <div v-if="msg._attachments && msg._attachments.length" class="user-attach">
@@ -220,6 +222,20 @@ defineExpose({ scrollToBottom })
 
 .message.user {
   flex-direction: row-reverse;
+}
+
+.message.event {
+  justify-content: center;
+}
+
+.event-note {
+  width: 100%;
+  text-align: center;
+  padding: 2px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-text-3);
+  opacity: 0.7;
 }
 
 .avatar-wrap {
