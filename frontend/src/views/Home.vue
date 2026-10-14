@@ -20,17 +20,27 @@
         @toggle-sidebar="drawerOpen = !drawerOpen"
       />
 
-      <!-- 规划期任务清单（置顶：模型说"见上方清单"时真实可见；set_todolist / check_todo 实时同步） -->
-      <div v-if="todolistItems.length" class="todo-panel">
-        <div class="todo-header">📋 任务清单</div>
-        <div class="todo-list">
+      <!-- 规划期任务清单（置顶；set_todolist / check_todo 实时同步） -->
+      <div v-if="todolistItems.length" class="todo-panel" :class="{ 'all-done': todoAllDone }">
+        <div class="todo-header" @click="todoCollapsed = !todoCollapsed" title="点击折叠 / 展开">
+          <span class="todo-title">
+            <span class="todo-emoji">{{ todoAllDone ? '✅' : '📋' }}</span>
+            <span>{{ todoAllDone ? '全部完成' : '任务清单' }}</span>
+          </span>
+          <span class="todo-progress" :class="{ done: todoAllDone }">{{ todoDoneCount }}/{{ todolistItems.length }}</span>
+          <span class="todo-chevron" :class="{ collapsed: todoCollapsed }">▾</span>
+        </div>
+        <div class="todo-bar">
+          <div class="todo-bar-fill" :style="{ width: todoPercent + '%' }"></div>
+        </div>
+        <div v-show="!todoCollapsed" class="todo-list">
           <div
             v-for="(it, i) in todolistItems" :key="it.id || i"
             class="todo-item" :class="{ done: it.done }"
+            :style="{ '--i': i }"
           >
-            <span class="todo-box">{{ it.done ? '✓' : '○' }}</span>
+            <span class="todo-box">{{ it.done ? '✓' : '' }}</span>
             <span class="todo-text">{{ it.text }}</span>
-            <span v-if="it.done" class="todo-done-tag">完成</span>
           </div>
         </div>
       </div>
@@ -41,6 +51,8 @@
         :is-loading="isLoading"
         :current-session-id="currentSessionId"
         :status-text="agentStatus.visible ? agentStatus.text : ''"
+        @download-deliverable="downloadDeliverable"
+        @suggest="onSuggest"
       />
 
       <!-- 选择栏 -->
@@ -130,11 +142,12 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useMessage, useDialog, useLoadingBar } from 'naive-ui'
 
 import { useUserStore } from '@/stores/user'
+import { useChatStore } from '@/stores/chat'
 import { generateNewId } from '@/utils/uuid'
 import axios from '@/http/interceptor'
 
@@ -154,18 +167,50 @@ const dialog = useDialog()
 const loadingBar = useLoadingBar()
 
 // --- 状态 ---
-const messages = ref([])
-let msgKeyCounter = 0
-
-function nextMsgKey() {
-  return ++msgKeyCounter
-}
-const isLoading = ref(false)
+const chat = useChatStore()
 const isUploading = ref(false)
 const isLoadingHistory = ref(false)
 const messageListRef = ref(null)
 const sessionList = ref([])
-const currentSessionId = ref('')
+const currentSessionId = ref(localStorage.getItem('chat_session_id') || '')
+
+// 当前会话的聊天状态（存于 chat store：切会话 / 进后台都不丢失）
+const active = computed(() => chat.sessions[currentSessionId.value] || null)
+const messages = computed(() => active.value?.messages || [])
+const isLoading = computed(() => !!active.value?.isLoading)
+const contextUsage = computed(() => active.value?.contextUsage || null)
+const agentStatus = computed(() => active.value?.agentStatus || { visible: false, text: '' })
+const todolistItems = computed(() => active.value?.todolistItems || [])
+// 任务清单面板（进度 / 折叠 / 完成态）
+const todoCollapsed = ref(false)
+const todoDoneCount = computed(() => todolistItems.value.filter((it) => it.done).length)
+const todoAllDone = computed(
+  () => todolistItems.value.length > 0 && todoDoneCount.value === todolistItems.value.length
+)
+const todoPercent = computed(() =>
+  todolistItems.value.length
+    ? Math.round((todoDoneCount.value / todolistItems.value.length) * 100)
+    : 0
+)
+// 全部完成时自动展开（“弹出”），即便之前被手动折叠
+watch(todoAllDone, (done) => { if (done) todoCollapsed.value = false })
+const clarification = computed(() => active.value?.clarification || null)
+const clarifVisible = computed({
+  get: () => !!active.value?.clarifVisible,
+  set: (v) => { if (active.value) active.value.clarifVisible = v },
+})
+const clarifChoice = computed({
+  get: () => active.value?.clarifChoice || '',
+  set: (v) => { if (active.value) active.value.clarifChoice = v },
+})
+const clarifCustom = computed({
+  get: () => active.value?.clarifCustom || '',
+  set: (v) => { if (active.value) active.value.clarifCustom = v },
+})
+const clarifSubmitting = computed(() => !!active.value?.clarifSubmitting)
+const documentList = computed(() => active.value?.documents || [])
+const documentUsage = computed(() => active.value?.usage || { current_mb: 0, max_mb: 0, limit_enabled: false })
+const parseStatus = computed(() => active.value?.parseStatus || {})
 
 // MinerU 支持的格式 + 常规文本（txt/md 仅暂存，不解析）+ Office 文档
 const ALLOWED_EXTENSIONS = [
@@ -175,8 +220,6 @@ const ALLOWED_EXTENSIONS = [
 ]
 const MAX_FILE_SIZE = 20 * 1024 * 1024  // 与后端「会话附件总大小上限」保持一致
 
-const documentList = ref([])
-const documentUsage = ref({ current_mb: 0, max_mb: 0, limit_enabled: false })
 const isDocModalOpen = ref(false)
 const isDeleting = ref(false)
 const drawerOpen = ref(false)
@@ -207,32 +250,9 @@ const currentSessionTitle = computed(() => {
 })
 
 // --- 文档管理 ---
-const fetchDocuments = async () => {
-  if (!currentSessionId.value) {
-    documentList.value = []
-    documentUsage.value = { current_mb: 0, max_mb: 0, limit_enabled: false }
-    parseStatus.value = {}
-    return
-  }
-  try {
-    const response = await axios.get('/api/session_files', {
-      headers: { 'X-Session-ID': currentSessionId.value },
-    })
-    if (response.status === 200) {
-      documentList.value = (response.data.files || []).map((f) => ({
-        name: f.name,
-        size: f.size || 0,
-        kind: f.kind || 'file',
-      }))
-      if (response.data.usage) documentUsage.value = response.data.usage
-    }
-  } catch (error) {
-    console.error('获取会话附件失败:', error)
-  }
-}
+const fetchDocuments = () => chat.fetchDocuments(currentSessionId.value)
 
 // ── 附件 MinerU 解析状态（对话页上传 → 解析为 txt，不入向量库） ──
-const parseStatus = ref({})
 let parseTimer = null
 const statusCounts = computed(() => {
   const c = { pending: 0, parsing: 0, success: 0, failed: 0, skipped: 0 }
@@ -244,19 +264,12 @@ const statusCounts = computed(() => {
 
 const fetchParseStatus = async () => {
   if (!currentSessionId.value) return
-  try {
-    const res = await axios.get('/api/session_files/parse_status', {
-      headers: { 'X-Session-ID': currentSessionId.value },
-    })
-    parseStatus.value = res.data?.files || {}
-    const busy = statusCounts.value.parsing + statusCounts.value.pending
-    if (busy > 0) {
-      startParsePolling()
-    } else {
-      stopParsePolling()
-    }
-  } catch (error) {
-    console.error('获取附件解析状态失败:', error)
+  await chat.fetchParseStatus(currentSessionId.value)
+  const busy = statusCounts.value.parsing + statusCounts.value.pending
+  if (busy > 0) {
+    startParsePolling()
+  } else {
+    stopParsePolling()
   }
 }
 
@@ -280,6 +293,26 @@ const closeDocManager = () => {
 // 双击文档: 直接下载（blob + <a download>），no 再依赖新标签预览/弹窗
 // 附件名可能带 query_img/ 前缀：按段编码，保留路径分隔符
 const encDocPath = (name) => String(name).split('/').map(encodeURIComponent).join('/')
+
+// 下载交付物（PDF）：带鉴权请求取 blob 再落盘
+const downloadDeliverable = async (msg) => {
+  if (!msg || !msg.id) return
+  try {
+    const resp = await axios.get(`/api/deliverables/${encodeURIComponent(msg.id)}`, {
+      responseType: 'blob',
+    })
+    const url = URL.createObjectURL(resp.data)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${msg.title || '交付物'}.pdf`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  } catch (e) {
+    message.error('下载交付物失败')
+  }
+}
 
 const openDocument = async (docName) => {
   try {
@@ -325,10 +358,7 @@ const deleteSelectedDocs = async (docsToDelete) => {
         })
       )
     )
-    const del = new Set(docsToDelete)
-    documentList.value = documentList.value.filter((doc) => !del.has(doc.name))
-    messages.value.push({ role: 'event', content: eventText('delete', docsToDelete), _key: nextMsgKey() })
-    throttleScroll()
+    chat.pushEvent(currentSessionId.value, 'delete', docsToDelete)
     message.success('附件删除成功')
     await fetchDocuments()
   } catch (error) {
@@ -373,6 +403,12 @@ const fetchUserSessions = async () => {
           !sessionList.value.find((s) => s.id === currentSessionId.value)
         ) {
           switchSession(latestId)
+        } else {
+          // 恢复上次会话（如从管理后台返回）：确保 store 有状态并加载历史
+          const st = chat.ensure(currentSessionId.value)
+          if (!st.historyLoaded && !st.isLoading) chat.loadHistory(currentSessionId.value)
+          fetchDocuments()
+          fetchParseStatus()
         }
       } else {
         createNewSession()
@@ -410,6 +446,7 @@ const deleteSession = async (id) => {
     const response = await axios.delete(`/api/sessions/${id}`)
     if (response.status === 200) {
       sessionList.value = sessionList.value.filter((s) => s.id !== id)
+      chat.drop(id)
       if (currentSessionId.value === id) {
         if (sessionList.value.length > 0) {
           switchSession(sessionList.value[0].id)
@@ -426,85 +463,14 @@ const deleteSession = async (id) => {
 
 const switchSession = async (id) => {
   if (id === currentSessionId.value) return
+  const st = chat.ensure(id)
   currentSessionId.value = id
-  messages.value = []
-  isLoading.value = true
-  try {
-    await loadHistoryMessages(id)
-  } catch (error) {
-    console.error('加载历史失败', error)
-  } finally {
-    isLoading.value = false
-  }
-}
-
-// 用户消息清洗：剥离后端注入的"附带图片"说明块，还原为可见文本 + 附带图片标注
-function cleanUserMessage(content = '') {
-  const text = String(content || '')
-  const m = text.match(/\n\n\[用户附带了图片，图片对象键：(.*?)。/)
-  if (!m) return { role: 'user', content: text }
-  let attach
-  try {
-    const arr = JSON.parse(m[1])
-    attach = Array.isArray(arr) && arr.length ? arr : undefined
-  } catch (e) {
-    attach = undefined
-  }
-  return { role: 'user', content: text.slice(0, m.index), _attachments: attach }
-}
-
-// 事件条目（上传/删除附件、切换风格）→ 聊天列表中的操作提示文本
-function eventText(type, files = []) {
-  const names = Array.isArray(files) ? files : []
-  const head = names.slice(0, 3).join('、')
-  const suffix = names.length > 3 ? ' 等' : ''
-  if (type === 'upload') return `已上传附件：${head}${suffix}`
-  if (type === 'delete') return `已删除附件：${head}${suffix}`
-  if (type === 'delete_all') return '已清空全部附件'
-  if (type === 'style_change') return `切换回答风格：${names[0] || 'default'}`
-  return ''
-}
-
-const loadHistoryMessages = async (sessionId) => {
-  try {
-    const response = await axios.get(`/api/history/${sessionId}`)
-    contextUsage.value = null  // 切会话后重置上下文指示
-    if (response.status === 200) {
-      const data = response.data
-      const newMessages = []
-      for (const msg of data.history || []) {
-        // 事件条目：渲染为居中小字操作提示（同时后端已注入 LLM 上下文）
-        if (msg.type === 'event') {
-          const text = eventText(msg.event_type, msg.files)
-          if (text) newMessages.push({ role: 'event', content: text, _key: nextMsgKey() })
-          continue
-        }
-        if (msg.type === 'turn') {
-          // 完整对话回合：从 messages 数组中提取 user/assistant 消息
-          for (const m of msg.messages || []) {
-            if (m.role === 'user') {
-              newMessages.push({ ...cleanUserMessage(m.content), _key: nextMsgKey() })
-            } else if (m.role === 'assistant' && !m.tool_calls) {
-              newMessages.push({ role: 'ai', content: m.content || '', _key: nextMsgKey() })
-            }
-            // tool 消息不渲染，仅供 LLM 上下文使用
-          }
-          continue
-        }
-        // 旧格式 qa 对
-        if (msg.user == null && msg.assistant == null) continue
-        newMessages.push(
-          { role: 'user', content: msg.user || '', _key: nextMsgKey() },
-          { role: 'ai', content: msg.assistant || '', _key: nextMsgKey() }
-        )
-      }
-      messages.value = newMessages
-    } else {
-      messages.value = []
-    }
-  } catch (e) {
-    messages.value = []
-  }
+  // 仅在首次进入时加载历史；之后复用 store 中的会话状态。
+  // 否则每次切回都会用服务端历史覆盖本地 messages —— 而服务端历史不含"思考过程"（reasoning），
+  // 会把已累积的思考记录冲掉。
+  if (!st.historyLoaded && !st.isLoading) await chat.loadHistory(id)
+  fetchDocuments()
+  fetchParseStatus()
 }
 
 // --- 提问与流式 ---
@@ -517,141 +483,17 @@ const throttleScroll = () => {
   })
 }
 
-let lastProcessedLength = 0
-let sseBuffer = ''
+// 聊天 / 流式状态已移入 chat store（支持跨会话、跨路由的后台生成）。
+// 视图侧仅保留滚动副作用：切换会话或当前会话内容变化时滚动到底部。
+watch(
+  () => [currentSessionId.value, active.value?.rev],
+  () => throttleScroll(),
+)
 
-// ── SSE 流式事件处理（发送 / 续答复用）──
-let sseCtx = null   // { aiIndex, content, reasoning, version, chunk, reasoningDirty }
+// 记住当前会话：从管理后台等页面返回时恢复同一会话
+watch(currentSessionId, (v) => { if (v) localStorage.setItem('chat_session_id', v) })
 
-function beginSse(aiIndex) {
-  sseBuffer = ''
-  lastProcessedLength = 0
-  sseCtx = { aiIndex, content: '', reasoning: '', version: 0, chunk: '', reasoningDirty: false }
-  return sseCtx
-}
-
-function flushSse(force = false) {
-  const ctx = sseCtx
-  if (!ctx) return
-  if (ctx.chunk) {
-    ctx.content += ctx.chunk
-    ctx.chunk = ''
-    ctx.version++
-  }
-  // 正文或有新的思考内容时都刷新（否则纯思考阶段 version 不增长，思考过程不会流式显示）
-  if (ctx.version || ctx.reasoningDirty || force) {
-    ctx.reasoningDirty = false
-    messages.value[ctx.aiIndex] = {
-      role: 'ai', content: ctx.content, reasoning: ctx.reasoning, _v: ctx.version,
-    }
-    throttleScroll()
-  }
-}
-
-function applySseContent(content) {
-  const ctx = sseCtx
-  if (!ctx) return
-  if (typeof content === 'string') { ctx.chunk += content; return }   // 旧格式纯字符串 token
-  if (typeof content !== 'object' || !content) return
-
-  if (content.type === 'status') {
-    const label = statusLabels[content.status]
-    if (content.status === 'thinking' || content.status === 'calling_tool') {
-      agentStatus.value = {
-        visible: true,
-        text: typeof label === 'function' ? label(content) : (label || '处理中…'),
-      }
-    } else if (content.status === 'tool_result') {
-      const summary = typeof label === 'function' ? label(content) : ''
-      agentStatus.value = summary ? { visible: true, text: summary } : { visible: false, text: '' }
-    } else if (content.status === 'ask_user') {
-      clarification.value = {
-        question: content.question || '',
-        options: Array.isArray(content.options) ? content.options : [],
-      }
-      clarifChoice.value = ''
-      clarifCustom.value = ''
-      clarifVisible.value = true
-    } else if (content.status === 'todolist') {
-      todolistItems.value = Array.isArray(content.items) ? content.items : []
-    } else if (content.status === 'cancelled') {
-      const cancelMsg = { role: 'ai', content: '', _key: nextMsgKey(), isCancelled: true }
-      messages.value[ctx.aiIndex]
-        ? Object.assign(messages.value[ctx.aiIndex], cancelMsg)
-        : messages.value.push(cancelMsg)
-      agentStatus.value = { visible: false, text: '' }
-    }
-    return
-  }
-  if (content.type === 'token') {
-    agentStatus.value = { visible: false, text: '' }
-    ctx.chunk += content.text || ''
-    return
-  }
-  if (content.type === 'reasoning') {
-    ctx.reasoning += content.text || ''
-    ctx.reasoningDirty = true
-    return   // 交由本次 download 的收尾 flushSse 统一刷新
-  }
-  if (content.type === 'context') {
-    const used = Number(content.used_chars) || 0
-    const win = Number(content.window_chars) || 0
-    contextUsage.value = { used, window: win, pct: win ? Math.round((used / win) * 100) : 0 }
-  }
-}
-
-// axios onDownloadProgress 处理器：增量解析 SSE（只处理 \n\n 结束的完整事件）
-function sseDownloadHandler() {
-  return (progressEvent) => {
-    const fullText = progressEvent.event.target.responseText || ''
-    const newText = fullText.slice(lastProcessedLength)
-    if (!newText) return
-    lastProcessedLength = fullText.length
-    sseBuffer += newText
-    const events = sseBuffer.split('\n\n')
-    sseBuffer = events.pop() || ''
-    for (const event of events) {
-      for (const line of event.split('\n')) {
-        const trimmed = line.trim()
-        if (!trimmed.startsWith('data:')) continue
-        const raw = trimmed.slice(5)
-        if (!raw || raw === '[DONE]') continue
-        let content
-        try { content = JSON.parse(raw) } catch { content = raw }
-        if (!content) continue
-        applySseContent(content)
-      }
-    }
-    flushSse(false)
-  }
-}
-
-// 收尾：任务清单收纳进本轮 AI 消息 + 落定最终内容
-function finalizeSse() {
-  const ctx = sseCtx
-  if (ctx && todolistItems.value && todolistItems.value.length) {
-    const allDone = todolistItems.value.every(it => it.done)
-    const mark = allDone ? '✅' : '📋'
-    ctx.content += `\n\n---\n${mark} 任务清单（${allDone ? '全部完成' : '未全部完成'}）\n` +
-      todolistItems.value.map(it => `- ${it.done ? '[x]' : '[ ]'} ${it.text}`).join('\n')
-    ctx.version++
-    todolistItems.value = []
-  }
-  flushSse(true)
-  sseBuffer = ''
-  sseCtx = null
-}
-
-// Agent 状态追踪
-const agentStatus = ref({ visible: false, text: '' })
-const todolistItems = ref([])   // 规划期任务清单（set_todolist / check_todo 事件驱动）
-
-// 澄清选择框（ask_user_for_clarification）
-const clarification = ref(null)      // { question, options }
-const clarifVisible = ref(false)
-const clarifChoice = ref('')
-const clarifCustom = ref('')
-const clarifSubmitting = ref(false)
+// 澄清选择框是否已可提交
 const clarifValueReady = computed(() => {
   const q = clarification.value
   if (!q) return false
@@ -662,6 +504,7 @@ const clarifValueReady = computed(() => {
   }
   return clarifCustom.value.trim().length > 0
 })
+
 async function submitClarification() {
   const q = clarification.value
   if (!q || clarifSubmitting.value) return
@@ -672,52 +515,10 @@ async function submitClarification() {
     answer = clarifCustom.value.trim()
   }
   if (!answer) { message.warning('请选择或输入你的回答'); return }
-
-  // 立刻关闭弹窗并上屏用户回答，避免长续跑期间页面像卡死
-  clarifVisible.value = false
-  clarification.value = null
-  messages.value.push({ role: 'user', content: answer, _key: nextMsgKey() })
-  messages.value.push({ role: 'ai', content: '', reasoning: '', _v: 0, _key: nextMsgKey() })
-  const aiIdx = messages.value.length - 1
-  clarifSubmitting.value = true
-  agentStatus.value = { visible: true, text: '正在继续生成…' }
-  isLoading.value = true
-  contextUsage.value = null
-  beginSse(aiIdx)
-  throttleScroll()
-
-  try {
-    // 续跑同样走流式（stream: true），与 /api/query 共用 SSE 处理
-    await axios.post(
-      '/api/query/resume',
-      { session_id: currentSessionId.value, answer, stream: true },
-      {
-        headers: { 'Content-Type': 'application/json' },
-        responseType: 'text',
-        onDownloadProgress: sseDownloadHandler(),
-      },
-    )
-  } catch (e) {
-    const ctx = sseCtx
-    const errMsg = (e && e.response && e.response.data && e.response.data.detail) || (e && e.message) || '未知错误'
-    if (ctx) {
-      ctx.content += `\n\n*[继续生成失败：${errMsg}]*`
-      ctx.version++
-      messages.value[ctx.aiIndex] = {
-        role: 'ai', content: ctx.content, reasoning: ctx.reasoning, _v: ctx.version,
-      }
-    }
-  } finally {
-    agentStatus.value = { visible: false, text: '' }
-    isLoading.value = false
-    clarifSubmitting.value = false
-    finalizeSse()
-    nextTick(() => messageListRef.value?.scrollToBottom())
-  }
+  // 续跑在 store 中进行（可后台），无需 await
+  chat.resume(currentSessionId.value, answer)
 }
 
-// 上下文使用情况（来自后端 context 事件）
-const contextUsage = ref(null)
 const fmtChars = (n) => (Number(n) || 0).toLocaleString('en-US')
 
 // ── 图搜文（已并入 search_knowledge_base 通道，粘贴图片随发送上传） ──
@@ -752,115 +553,31 @@ const workflowOptions = computed(() => {
   return opts
 })
 
-const statusLabels = {
-  thinking: '深度思考中…',
-  calling_tool: (info) => {
-    const prefix = info.total ? `[${info.total}个工具] ` : ''
-    if (info.tool === 'search_knowledge_base' && info.query) {
-      const q = Array.isArray(info.query) ? info.query.join(', ') : info.query
-      return `${prefix}正在检索知识库: ${q}…`
-    }
-    if (info.tool === 'read_full_document' && info.filename) {
-      return `${prefix}正在阅读: ${info.filename}…`
-    }
-    if ((info.tool === 'read_knowledge_base_document' || info.tool === 'read_session_document') && info.filename) {
-      return `${prefix}正在阅读: ${info.filename}…`
-    }
-    if (info.tool === 'web_search' && info.query) {
-      const q = Array.isArray(info.query) ? info.query[0] : info.query
-      return `${prefix}正在联网搜索: ${q}…`
-    }
-    const toolNames = {
-      search_knowledge_base: `${prefix}正在检索知识库…`,
-      read_knowledge_base_document: `${prefix}正在阅读知识库文档…`,
-      read_session_document: `${prefix}正在阅读文档全文…`,
-      web_search: `${prefix}正在联网搜索…`,
-    }
-    return toolNames[info.tool] || `${prefix}正在调用工具: ${info.tool}…`
-  },
-  tool_result: (info) => {
-    if (info.chunks !== undefined) {
-      return `✅ 检索完成，找到 ${info.chunks} 条结果`
-    }
-    if (info.tool === 'web_search') {
-      return `✅ 联网搜索完成`
-    }
-    if (info.tool === 'read_full_document') {
-      return `✅ 文档阅读完成`
-    }
-    if (info.tool === 'read_knowledge_base_document' || info.tool === 'read_session_document') {
-      return `✅ 文档阅读完成`
-    }
-    if (info.tool === 'ask_user_for_clarification') {
-      return '❓ 需要向您提问'
-    }
-    return ''
-  },
-}
-
 const sendQuestion = async (payload) => {
   const text = (payload && payload.text || '').trim()
   const images = payload && payload.images || []
   // 必须有消息正文（纯图片不支持，需附上文字说明）
   if (!text || isLoading.value) return
 
-  // 新一轮开始：清掉上一轮遗留的任务清单悬浮面板
-  todolistItems.value = []
-
   // 确保会话已创建（上传图片需要挂在当前会话目录 sessions/{user_id}/{session_id}/ 下）
   if (!currentSessionId.value) await createNewSession()
 
-  // 附带剪贴板图片：先上传换取对象键，随问答带给模型做图文检索
+  // 附带剪贴板图片：先上传换取对象键（图文检索）
   const imageKeys = images.length ? await uploadPastedImages(images) : []
-  messages.value.push({
-    role: 'user',
-    content: text,
-    _key: nextMsgKey(),
-    _attachments: imageKeys.length ? imageKeys : undefined,
+
+  // 在 store 中发起：可后台运行，切走 / 进后台都不中断
+  chat.send(currentSessionId.value, {
+    text,
+    imageKeys,
+    style: userStore.answerStyle,
+    workflow: selectedWorkflow.value === '__auto__' ? null : selectedWorkflow.value,
   })
-  isLoading.value = true
-  throttleScroll()
-
-  // 立即推入占位 AI 消息，后续通过索引替换来更新（触发 Vue 数组响应式）
-  messages.value.push({ role: 'ai', content: '', reasoning: '', _v: 0, _key: nextMsgKey() })
-  const aiIndex = messages.value.length - 1
-  contextUsage.value = null
-  beginSse(aiIndex)
-
-  try {
-    await axios.post(
-      '/api/query',
-      { session_id: currentSessionId.value, question: text, stream: true, style: userStore.answerStyle, workflow: selectedWorkflow.value === '__auto__' ? null : selectedWorkflow.value, images: imageKeys.length ? imageKeys : undefined },
-      {
-        headers: { 'Content-Type': 'application/json' },
-        responseType: 'text',
-        onDownloadProgress: sseDownloadHandler(),
-      }
-    )
-  } catch (error) {
-    const ctx = sseCtx
-    if (ctx) {
-      ctx.content += '\n\n*[系统错误，请重试]*'
-      ctx.version++
-      messages.value[ctx.aiIndex] = {
-        role: 'ai', content: ctx.content, reasoning: ctx.reasoning, _v: ctx.version,
-      }
-    }
-    message.error('请求失败，请重试')
-  } finally {
-    isLoading.value = false
-    finalizeSse()
-    nextTick(() => messageListRef.value?.scrollToBottom())
-  }
 }
 
-const stopGeneration = async () => {
-  try {
-    await axios.post('/api/query/cancel', { session_id: currentSessionId.value })
-  } catch {
-    // 忽略取消请求的异常
-  }
-}
+const stopGeneration = () => chat.stop(currentSessionId.value)
+
+// 空对话推荐问题：点击后直接作为消息发送
+const onSuggest = (text) => sendQuestion({ text })
 
 // --- 文件上传 ---
 const uploadStatus = ref({ visible: false, text: '', file: '' })
@@ -946,14 +663,12 @@ const handleFileUpload = async (file) => {
     formData.append('files', file)
 
     // 会话附件暂存：只落盘到当前会话目录，不解析/不入向量库
-    const res = await axios.post('/api/session_files/upload', formData, {
+    await axios.post('/api/session_files/upload', formData, {
       headers: { 'X-Session-ID': sessionId },
     })
-    if (res.data?.usage) documentUsage.value = res.data.usage
     await fetchDocuments()
     await fetchParseStatus()
-    messages.value.push({ role: 'event', content: eventText('upload', [file.name]), _key: nextMsgKey() })
-    throttleScroll()
+    chat.pushEvent(sessionId, 'upload', [file.name])
     message.success(`${file.name} 已暂存到当前会话，正在解析…`)
     loadingBar.finish()
   } catch (error) {
@@ -981,16 +696,6 @@ const handleLogout = () => {
     },
   })
 }
-
-// 会话切换时刷新该会话的暂存附件与解析状态
-watch(currentSessionId, () => {
-  parseStatus.value = {}
-  todolistItems.value = []
-  clarification.value = null
-  clarifVisible.value = false
-  fetchDocuments()
-  fetchParseStatus()
-})
 
 onMounted(() => {
   fetchUserSessions()
@@ -1117,36 +822,120 @@ onUnmounted(() => {
   margin: 12px auto 0;
   max-width: 880px;
   width: calc(100% - 48px);
-  padding: 12px 16px;
-  border: 1px solid var(--color-border);
-  border-radius: 12px;
-  background: rgba(24, 160, 88, 0.05);
-  box-shadow: 0 1px 3px var(--color-shadow-card);
+  padding: 10px 14px 12px;
+  border: 1px solid var(--color-border-light);
+  border-radius: 14px;
+  background: var(--color-bg-card);
+  box-shadow: 0 2px 10px var(--color-shadow-card);
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+  animation: todoIn 0.25s ease-out;
+}
+.todo-panel.all-done {
+  border-color: var(--color-success);
+  box-shadow: 0 2px 14px rgba(24, 160, 88, 0.18);
 }
 .todo-header {
-  font-size: 13px;
-  font-weight: 600;
-  margin-bottom: 6px;
-  color: var(--color-text-1);
-}
-.todo-list { display: flex; flex-direction: column; gap: 6px; }
-.todo-item {
   display: flex;
   align-items: center;
   gap: 8px;
+  cursor: pointer;
+  user-select: none;
+}
+.todo-title {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+.todo-emoji { font-size: 14px; }
+.todo-progress {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--color-neutral-wash);
+  color: var(--color-text-3);
+  transition: background-color 0.25s ease, color 0.25s ease;
+}
+.todo-progress.done {
+  background: rgba(24, 160, 88, 0.15);
+  color: var(--color-success);
+}
+.todo-chevron {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--color-text-3);
+  transition: transform 0.2s ease;
+}
+.todo-chevron.collapsed { transform: rotate(-90deg); }
+.todo-bar {
+  height: 4px;
+  margin: 8px 0 2px;
+  border-radius: 999px;
+  background: var(--color-neutral-wash);
+  overflow: hidden;
+}
+.todo-bar-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--color-primary);
+  transition: width 0.3s ease, background-color 0.3s ease;
+}
+.todo-panel.all-done .todo-bar-fill { background: var(--color-success); }
+.todo-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+}
+.todo-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 6px;
+  border-radius: 8px;
   font-size: 13px;
   color: var(--color-text-1);
+  transition: background-color 0.15s ease;
+  transition-delay: calc(var(--i, 0) * 90ms);
+}
+.todo-item:hover { background: var(--color-neutral-wash-light); }
+.todo-box {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1.5px solid var(--color-border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+  color: #fff;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+  transition-delay: calc(var(--i, 0) * 90ms);
+}
+.todo-item.done .todo-box {
+  background: var(--color-success);
+  border-color: var(--color-success);
+}
+.todo-text {
+  flex: 1;
+  transition: color 0.2s ease;
+  transition-delay: calc(var(--i, 0) * 90ms);
 }
 .todo-item.done .todo-text {
   color: var(--color-text-3);
   text-decoration: line-through;
+  text-decoration-color: var(--color-border);
 }
-.todo-box { flex-shrink: 0; }
-.todo-text { flex: 1; }
-.todo-done-tag {
-  font-size: 11px;
-  color: #18a058;
-  flex-shrink: 0;
+@keyframes todoIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
 }
 
 /* 澄清选择框 */

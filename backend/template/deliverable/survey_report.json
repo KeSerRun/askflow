@@ -1,0 +1,42 @@
+{
+  "name": "survey_report",
+  "version": 3,
+  "label": "调查报告",
+  "description": "调查报告：调查目的 / 方法 / 样本 / 调查结果（含数据表）/ 结论 / 建议。",
+  "accent": "#3f8f6f",
+  "css": "",
+  "fields": [
+    {
+      "key": "objective",
+      "label": "调查目的",
+      "type": "text(markdown)"
+    },
+    {
+      "key": "method",
+      "label": "调查方法",
+      "type": "text(markdown)"
+    },
+    {
+      "key": "sample",
+      "label": "样本情况",
+      "type": "text(markdown)"
+    },
+    {
+      "key": "findings",
+      "label": "调查结果",
+      "type": "list[{title, detail(markdown), data:{指标:值}}]"
+    },
+    {
+      "key": "conclusion",
+      "label": "结论",
+      "type": "text(markdown)"
+    },
+    {
+      "key": "recommendations",
+      "label": "建议",
+      "type": "list[str]"
+    }
+  ],
+  "html": "<div class=\"hero\">\n  <div class=\"kicker\">调查报告 · {{ today }}</div>\n  <h1>{{ title }}</h1>\n</div>\n{% if content.objective %}<h2>调查目的</h2>{{ content.objective | md }}{% endif %}\n{% if content.method %}<h2>调查方法</h2>{{ content.method | md }}{% endif %}\n{% if content.sample %}<h2>样本情况</h2>{{ content.sample | md }}{% endif %}\n{% if content.findings %}\n<h2>调查结果</h2>\n{% for f in content.findings %}\n  {% if f.title %}<h3>{{ f.title }}</h3>{% endif %}\n  {% if f.detail %}{{ f.detail | md }}{% endif %}\n  {% if f.data %}\n  <table>\n    <tr><th>指标</th><th>数值</th></tr>\n    {% for k, v in (f.data or {}).items() %}<tr><td>{{ k }}</td><td>{{ v }}</td></tr>{% endfor %}\n  </table>\n  {% endif %}\n{% endfor %}\n{% endif %}\n{% if content.conclusion %}<h2>结论</h2>{{ content.conclusion | md }}{% endif %}\n{% if content.recommendations %}\n<h2>建议</h2>\n<ul>{% for r in content.recommendations %}<li>{{ r | md }}</li>{% endfor %}</ul>\n{% endif %}",
+  "builtin_hash": "d09888ae0d65e27c4beb21981f9b0f82"
+}

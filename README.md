@@ -140,7 +140,11 @@ askflow/
 │   ├── infra/                    #   基础设施（logger/llm_client/health/adapters[通用仓储+各适配器]）
 │   ├── config/                   #   配置层（AppConfig / loader / facade[conf] / admin / env_aliases）
 │   ├── agent/                    #   Agent 引擎（ToolLoop+14 工具）
-│   ├── prompts/  tests/          #   提示词模板 / 测试基座
+│   ├── template/                 #   模板类资源（提示词 / 交付物模板 / 自定义工具源码）
+│   │   ├── prompts/              #     提示词（identity / style / workflow）
+│   │   ├── deliverable/          #     交付物模板（Jinja2 HTML 的 JSON）
+│   │   └── custom_tools/         #     自定义工具源码
+│   ├── tests/                    #   测试基座
 │   ├── data/                     #   运行时数据（向量库 / 日志 / 上传）
 │   └── .env  .env.default  .env.prod  pyproject.toml
 │

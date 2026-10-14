@@ -159,10 +159,10 @@ def _read_identity_body(path: Path) -> str:
 def _load_identity(prompts_dir: Path) -> str:
     """读取当前选中的身份文本。
 
-    身份为目录 ``prompts/identity/*.md`` 的多个预置：
-    - 活动项由 ``prompts/identity/.active`` 标记的文件名决定；
+    身份为目录 ``template/prompts/identity/*.md`` 的多个预置：
+    - 活动项由 ``template/prompts/identity/.active`` 标记的文件名决定；
     - 无标记时取目录内第一个 ``*.md``；
-    - 兼容旧版单文件 ``prompts/identity.md``。
+    - 兼容旧版单文件 ``template/prompts/identity.md``。
     仅返回正文（frontmatter 属元信息，不进入 system message）。
     """
     idir = prompts_dir / "identity"
@@ -260,7 +260,7 @@ class SkillLoader:
 # ── 工作流 ──
 
 class WorkflowRouter:
-    """工作流路由器：管理 prompts/workflow/ 目录下的工作流文件。"""
+    """工作流路由器：管理 template/prompts/workflow/ 目录下的工作流文件。"""
 
     def __init__(self, prompts_dir: str):
         self.workflow_dir: Path = Path(prompts_dir)

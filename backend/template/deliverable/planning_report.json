@@ -1,0 +1,42 @@
+{
+  "name": "planning_report",
+  "version": 3,
+  "label": "规划报告",
+  "description": "规划/实施方案：目标 / 背景 / 实施阶段（任务·负责人·时间）/ 里程碑 / 风险与应对 / 资源需求。",
+  "accent": "#3f6ea8",
+  "css": "",
+  "fields": [
+    {
+      "key": "goal",
+      "label": "目标",
+      "type": "text(markdown)"
+    },
+    {
+      "key": "background",
+      "label": "背景",
+      "type": "text(markdown)"
+    },
+    {
+      "key": "phases",
+      "label": "实施阶段",
+      "type": "list[{name, tasks:[str], owner, timeline}]"
+    },
+    {
+      "key": "milestones",
+      "label": "里程碑",
+      "type": "list[{name, date}]"
+    },
+    {
+      "key": "risks",
+      "label": "风险与应对",
+      "type": "list[{risk, mitigation}]"
+    },
+    {
+      "key": "resources",
+      "label": "资源需求",
+      "type": "text(markdown)"
+    }
+  ],
+  "html": "<div class=\"hero\">\n  <div class=\"kicker\">规划报告 · {{ today }}</div>\n  <h1>{{ title }}</h1>\n</div>\n{% if content.goal %}<h2>目标</h2>{{ content.goal | md }}{% endif %}\n{% if content.background %}<h2>背景</h2>{{ content.background | md }}{% endif %}\n{% if content.phases %}\n<h2>实施阶段</h2>\n<table>\n  <tr><th>阶段</th><th>任务</th><th>负责人</th><th>时间</th></tr>\n  {% for p in content.phases %}\n  <tr>\n    <td>{{ p.name }}</td>\n    <td>{% for t in (p.tasks or []) %}{{ t }}{% if not loop.last %}<br/>{% endif %}{% endfor %}</td>\n    <td>{{ p.owner }}</td>\n    <td>{{ p.timeline }}</td>\n  </tr>\n  {% endfor %}\n</table>\n{% endif %}\n{% if content.milestones %}\n<h2>里程碑</h2>\n<table>\n  <tr><th>里程碑</th><th>时间</th></tr>\n  {% for m in content.milestones %}<tr><td>{{ m.name }}</td><td>{{ m.date }}</td></tr>{% endfor %}\n</table>\n{% endif %}\n{% if content.risks %}\n<h2>风险与应对</h2>\n<table>\n  <tr><th>风险</th><th>应对措施</th></tr>\n  {% for r in content.risks %}<tr><td>{{ r.risk }}</td><td>{{ r.mitigation }}</td></tr>{% endfor %}\n</table>\n{% endif %}\n{% if content.resources %}<h2>资源需求</h2>{{ content.resources | md }}{% endif %}",
+  "builtin_hash": "0d3318f08b4735ebaa34db9ef67ee9a8"
+}

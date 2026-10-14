@@ -30,6 +30,7 @@ request_stats = get_container().get("request_stats")
 database_service = get_container().get("database_service")
 log_service = get_container().get("log_service")
 tool_service = get_container().get("tool_service")
+deliverable_service = get_container().get("deliverable_service")
 prompt_service = get_container().get("prompt_service")
 
 

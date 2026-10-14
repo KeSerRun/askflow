@@ -1,5 +1,5 @@
 # ════════════════════════════════════════════════════════════════
-# RAG Simple 后端镜像
+# AskFlow 后端镜像
 # 构建上下文 = 项目根（docker-compose 中 context: ..）
 # 布局与本地一致：
 #   /workspace/backend/         后端代码（WORKDIR，= _project_root）

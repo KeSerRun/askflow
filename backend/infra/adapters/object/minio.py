@@ -114,28 +114,6 @@ class MinioObjectStore:
             out.append((obj.object_name, int(getattr(obj, "size", None) or 0)))
         return out
 
-    def copy(self, src_key: str, dst_key: str) -> None:
-        self._client.copy_object(
-            self.bucket, _norm_key(dst_key),
-            f"{self.bucket}/{_norm_key(src_key)}",
-        )
-
-    # ── 便捷方法 ──
-
-    def put_file(self, key: str, local_path: str) -> None:
-        """从本地文件写入对象。"""
-        with open(local_path, "rb") as f:
-            self.put_bytes(key, f.read())
-
-    def get_to_file(self, key: str, local_path: str) -> bool:
-        """将对象写到本地文件；不存在返回 False。"""
-        data = self.get_bytes(key)
-        if data is None:
-            return False
-        with open(local_path, "wb") as f:
-            f.write(data)
-        return True
-
 
 def _norm_key(key: str) -> str:
     return key.strip("/")

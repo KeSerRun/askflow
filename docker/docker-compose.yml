@@ -342,6 +342,8 @@ services:
     volumes:
       # 运行时数据（向量库/上传/日志）
       - ./data/backend:/workspace/backend/data
+      # 自定义工具源码（后台可上传/编辑，持久化；template/ 其余部分随镜像）
+      - ./data/custom_tools:/workspace/backend/template/custom_tools
     ports:
       - "${BACKEND_PORT:-11000}:11000"
     depends_on:

@@ -16,13 +16,13 @@ router = APIRouter(prefix="/api", tags=["query"])
 
 @router.get("/styles")
 def list_styles():
-    """返回可用的回答风格列表（由 backend/prompts/style/ 自动发现）。"""
+    """返回可用的回答风格列表（由 backend/template/prompts/style/ 自动发现）。"""
     return views.styles(query_service.styles())
 
 
 @router.get("/workflows")
 def list_workflows():
-    """返回可用的工作流列表（由 backend/prompts/workflow/ 自动发现）。"""
+    """返回可用的工作流列表（由 backend/template/prompts/workflow/ 自动发现）。"""
     return views.workflows(query_service.workflows())
 
 

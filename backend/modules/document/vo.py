@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import mimetypes
-
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse, Response
 
-from core.responses import json, message
+from core.responses import file_response, json, message
 
 
 def session_files(files: list, usage: dict) -> JSONResponse:
@@ -30,12 +28,7 @@ def session_files_cleared() -> JSONResponse:
 
 def inline_bytes(data: bytes, filename: str) -> Response:
     """以 inline 方式返回字节（PDF/图片可在浏览器直接打开）。"""
-    media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
-    return Response(
-        content=data,
-        media_type=media_type,
-        headers={"Content-Disposition": f'inline; filename="{filename}"'},
-    )
+    return file_response(data, filename, inline=True)
 
 
 def mineru_image(document_service, doc_stem: str, img_name: str) -> Response:

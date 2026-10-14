@@ -9,6 +9,24 @@
       <n-text depth="3" class="welcome-sub">
         基于你上传的知识库，我可以回答相关问题。先上传文档，或直接开始提问。
       </n-text>
+
+      <!-- 推荐问题（示例）：点击直接发送 -->
+      <div class="suggest-grid">
+        <button
+          v-for="s in suggestions"
+          :key="s.label"
+          type="button"
+          class="suggest-card"
+          @click="onSuggest(s)"
+        >
+          <n-icon :size="20" :component="s.icon" class="suggest-icon" />
+          <span class="suggest-body">
+            <span class="suggest-label">{{ s.label }}</span>
+            <span class="suggest-desc">{{ s.desc }}</span>
+          </span>
+        </button>
+      </div>
+
       <n-text depth="3" class="welcome-session" v-if="sessionIdDisplay">
         当前会话：&nbsp;<code>{{ sessionIdDisplay }}</code>
       </n-text>
@@ -22,7 +40,21 @@
     >
       <!-- 系统事件（上传/删除附件等）：居中小字提示 -->
       <div v-if="msg.role === 'event'" class="event-note">{{ msg.content }}</div>
-      <div v-if="msg.role !== 'event'" class="avatar-wrap">
+      <!-- 交付物（PDF）：下载卡片 -->
+      <div v-else-if="msg.role === 'deliverable'" class="deliverable-card">
+        <n-icon :size="26" :component="DocumentTextOutline" class="deliverable-icon" />
+        <div class="deliverable-info">
+          <div class="deliverable-title">{{ msg.title }}</div>
+          <div class="deliverable-meta">PDF · {{ fmtSize(msg.size) }}</div>
+        </div>
+        <n-button size="small" type="primary" secondary @click="onDownloadDeliverable(msg)">
+          <template #icon>
+            <n-icon :component="DownloadOutline" />
+          </template>
+          下载
+        </n-button>
+      </div>
+      <div v-if="msg.role !== 'event' && msg.role !== 'deliverable'" class="avatar-wrap">
         <n-avatar
           v-if="msg.role === 'user'"
           round
@@ -41,7 +73,7 @@
         </n-avatar>
       </div>
 
-      <div v-if="msg.role !== 'event'" class="bubble">
+      <div v-if="msg.role !== 'event' && msg.role !== 'deliverable'" class="bubble">
         <template v-if="msg.role === 'user'">
           <div class="user-content">{{ msg.content }}</div>
           <div v-if="msg._attachments && msg._attachments.length" class="user-attach">
@@ -107,8 +139,18 @@
 import { ref, computed, nextTick, watch } from 'vue'
 import { renderMarkdown } from '@/utils/markdown'
 // Using renderMarkdown directly in template (no wrapper needed)
-import { NAvatar, NIcon, NH2, NText, NImage } from 'naive-ui'
-import { PersonOutline, ImageOutline, SparklesOutline } from '@vicons/ionicons5'
+import { NAvatar, NButton, NIcon, NH2, NText, NImage } from 'naive-ui'
+import {
+  ConstructOutline,
+  DocumentTextOutline,
+  DownloadOutline,
+  GitCompareOutline,
+  GlobeOutline,
+  ImageOutline,
+  LibraryOutline,
+  PersonOutline,
+  SparklesOutline,
+} from '@vicons/ionicons5'
 import { useUserStore } from '@/stores/user'
 
 const props = defineProps({
@@ -117,6 +159,47 @@ const props = defineProps({
   currentSessionId: { type: String, default: '' },
   statusText: { type: String, default: '' },
 })
+
+const emit = defineEmits(['download-deliverable', 'suggest'])
+
+const fmtSize = (bytes) => {
+  const n = Number(bytes) || 0
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / 1024 / 1024).toFixed(1)} MB`
+}
+
+const onDownloadDeliverable = (msg) => emit('download-deliverable', msg)
+
+// 空对话推荐问题（示例；点击即作为消息发给助手）
+const suggestions = [
+  {
+    icon: LibraryOutline,
+    label: '知识库问答',
+    desc: '基于已上传的文档作答',
+    prompt: '帮我概括知识库里的核心内容，并列出关键结论。',
+  },
+  {
+    icon: GlobeOutline,
+    label: '联网调研',
+    desc: '检索网络并生成 PDF 研究报告',
+    prompt: '联网调研「AI 编程助手」的最新进展，并生成一份 PDF 研究报告。',
+  },
+  {
+    icon: GitCompareOutline,
+    label: '对比分析',
+    desc: '多对象对比 + 选择建议',
+    prompt: '对比 DeepSeek 与 GPT 系列模型的优缺点与适用场景，给出选择建议，并生成一份 PDF 报告。',
+  },
+  {
+    icon: ConstructOutline,
+    label: '方案规划',
+    desc: '拆解阶段 / 里程碑 / 风险',
+    prompt: '帮我制定一份「团队引入 AI 编码助手」的实施方案（目标、阶段、里程碑、风险），并生成 PDF 报告。',
+  },
+]
+
+const onSuggest = (item) => emit('suggest', item.prompt)
 
 const messagesContainer = ref(null)
 
@@ -165,7 +248,7 @@ defineExpose({ scrollToBottom })
 
 .welcome {
   margin: 80px auto 0;
-  max-width: 520px;
+  max-width: 640px;
   text-align: center;
   display: flex;
   flex-direction: column;
@@ -196,6 +279,72 @@ defineExpose({ scrollToBottom })
   font-size: 14px;
   line-height: 1.6;
   max-width: 400px;
+}
+
+/* 推荐问题卡片：点击直接发送 */
+.suggest-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+  margin-top: 10px;
+}
+
+.suggest-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  border: 1px solid var(--color-border-light);
+  border-radius: 12px;
+  background: var(--color-bg-card);
+  box-shadow: 0 1px 3px var(--color-shadow-card);
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease, transform 0.16s ease;
+}
+
+.suggest-card:hover {
+  border-color: var(--color-primary);
+  background-color: var(--color-primary-bg-subtle);
+  transform: translateY(-1px);
+}
+
+.suggest-card:active {
+  transform: translateY(0);
+}
+
+.suggest-icon {
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: var(--color-primary);
+}
+
+.suggest-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.suggest-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-1);
+}
+
+.suggest-desc {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-text-3);
+}
+
+@media (max-width: 560px) {
+  .suggest-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .welcome-session {
@@ -236,6 +385,49 @@ defineExpose({ scrollToBottom })
   line-height: 1.5;
   color: var(--color-text-3);
   opacity: 0.7;
+}
+
+/* 交付物下载卡片 */
+.message.deliverable {
+  justify-content: center;
+}
+
+.deliverable-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 560px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border-light);
+  border-radius: 12px;
+  background: var(--color-bg-card);
+  box-shadow: 0 2px 10px var(--color-shadow-card);
+}
+
+.deliverable-icon {
+  flex-shrink: 0;
+  color: var(--color-primary);
+}
+
+.deliverable-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.deliverable-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-1);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.deliverable-meta {
+  font-size: 12px;
+  color: var(--color-text-3);
+  margin-top: 2px;
 }
 
 .avatar-wrap {

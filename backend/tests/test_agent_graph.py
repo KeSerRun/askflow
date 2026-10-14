@@ -14,7 +14,7 @@ from core.models import ChatResponse, ChatStreamEvent
 from infra.adapters.storage import SqliteRepo
 from modules.tools import ToolService
 
-PROMPTS = Path(__file__).resolve().parent.parent / "prompts"
+PROMPTS = Path(__file__).resolve().parent.parent / "template" / "prompts"
 
 # 一轮工具调用（set_goal，无外部依赖） → 一轮最终答案
 _TOOL_CALL = {

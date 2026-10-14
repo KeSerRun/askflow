@@ -129,6 +129,7 @@ import {
   DocumentsOutline,
   ConstructOutline,
   DocumentTextOutline,
+  AlbumsOutline,
 } from '@vicons/ionicons5'
 import logoSvg from '@/assets/logo.svg'
 import app from '@/config/app'
@@ -148,6 +149,7 @@ const menuItems = [
   { path: '/admin/logs', label: '日志管理', icon: DocumentsOutline },
   { path: '/admin/tools', label: '工具管理', icon: ConstructOutline },
   { path: '/admin/prompts', label: 'Prompt 管理', icon: DocumentTextOutline },
+  { path: '/admin/deliverables', label: '交付物模板', icon: AlbumsOutline },
   { path: '/admin/settings', label: '系统设置', icon: SettingsOutline },
 ]
 

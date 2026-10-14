@@ -1,0 +1,42 @@
+{
+  "name": "research_report",
+  "version": 3,
+  "label": "研究报告",
+  "description": "结构化的研究报告：摘要 / 背景 / 方法 / 主要发现 / 结论 / 参考来源。适合调研后成文。",
+  "accent": "#d4734e",
+  "css": "",
+  "fields": [
+    {
+      "key": "summary",
+      "label": "摘要",
+      "type": "text(markdown)"
+    },
+    {
+      "key": "background",
+      "label": "研究背景",
+      "type": "text(markdown)"
+    },
+    {
+      "key": "method",
+      "label": "研究方法",
+      "type": "text(markdown)"
+    },
+    {
+      "key": "findings",
+      "label": "主要发现",
+      "type": "list[{title, detail(markdown)}]"
+    },
+    {
+      "key": "conclusion",
+      "label": "结论",
+      "type": "text(markdown)"
+    },
+    {
+      "key": "references",
+      "label": "参考来源",
+      "type": "list[str]"
+    }
+  ],
+  "html": "<div class=\"hero\">\n  <div class=\"kicker\">研究报告 · {{ today }}</div>\n  <h1>{{ title }}</h1>\n</div>\n{% if content.summary %}<h2>摘要</h2>{{ content.summary | md }}{% endif %}\n{% if content.background %}<h2>研究背景</h2>{{ content.background | md }}{% endif %}\n{% if content.method %}<h2>研究方法</h2>{{ content.method | md }}{% endif %}\n{% if content.findings %}\n<h2>主要发现</h2>\n{% for f in content.findings %}\n  {% if f.title %}<h3>{{ f.title }}</h3>{% endif %}\n  {% if f.detail %}{{ f.detail | md }}{% endif %}\n{% endfor %}\n{% endif %}\n{% if content.conclusion %}<h2>结论</h2>{{ content.conclusion | md }}{% endif %}\n{% if content.references %}\n<h2>参考来源</h2>\n<ul>{% for r in content.references %}<li>{{ r | md }}</li>{% endfor %}</ul>\n{% endif %}",
+  "builtin_hash": "f0d0cd5242760466f43356b9012bf07f"
+}

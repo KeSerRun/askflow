@@ -10,14 +10,13 @@
 
 from __future__ import annotations
 
-import os
 import uuid
 from dataclasses import dataclass, field
 
 from agent import IntegratedSystem
 from agent.tools import registry as tool_registry
 from config import AppConfig, load_app_config
-from config.paths import _project_root
+from config.paths import custom_tools_dir, deliverable_templates_dir, prompts_dir
 from infra.adapters.cache import InMemoryCache, RedisCache
 from infra.adapters.llm import OpenAIChatModel, OpenAIEmbedder
 from infra.adapters.object import MinioObjectStore
@@ -27,6 +26,7 @@ from modules.auth import AuthService
 from modules.dashboard.service import DashboardService
 from modules.database import entity as _db_entity  # noqa: F401 注册 ORM 模型（chunk_parents 等）
 from modules.database.service import DatabaseService
+from modules.deliverable import DeliverableService
 from modules.document.service import DocumentService
 from modules.health.service import HealthService
 from modules.history import HistoryService
@@ -103,12 +103,11 @@ def build_container(cfg: AppConfig) -> Container:
     repo = CachedRepo(backend_repo(cfg.storage_db_url), cache)
 
     # ── 工具定义（数据库为准）：先种子入内建工具，再装载到注册表 ──
-    tool_service = ToolService(repo, data_dir=cfg.storage_data_dir)
-    # 自定义工具源码目录注册为可导入包（custom_tools.*）
-    from pathlib import Path as _Path
-
+    tool_service = ToolService(repo, custom_tools_dir=custom_tools_dir)
+    # 自定义工具源码目录（template/custom_tools）注册为可导入包（custom_tools.*）
     from agent.tools.registry import register_custom_tools_package
-    register_custom_tools_package(str(_Path(cfg.storage_data_dir) / "custom_tools"))
+
+    register_custom_tools_package(custom_tools_dir)
     tool_service.seed_builtins()
     # 移除已下线内建工具（read_document_titles / read_section）存量行
     from core.migrate import purge_deprecated_tools
@@ -157,6 +156,11 @@ def build_container(cfg: AppConfig) -> Container:
         logger.warning(f"MinIO 连接失败，对象存储不可用: {e}")
         object_store = None
 
+    # ── 交付物（模板 + HTML→PDF 渲染 + 生成） ──
+    deliverable_service = DeliverableService(
+        repo, object_store, deliverable_templates_dir,
+    )
+
     # ── 应用服务 ──
     user_service = UserService(repo)
     history_service = HistoryService(repo)
@@ -171,11 +175,12 @@ def build_container(cfg: AppConfig) -> Container:
         jwt_secret=cfg.auth_jwt_secret,
         refresh_store=repo,  # refresh token 轮换/吊销落库（复用通用仓储）
     )
-    session_service = SessionService(
-        repo, history_service,
-        cleanup=lambda user_id, session_id: document_service.clear_session_files(
-            user_id, session_id),
-    )
+    def _cleanup_session(user_id, session_id) -> None:
+        """删除会话时的级联清理：会话文件 + 交付物（对象存储与记录）。"""
+        document_service.clear_session_files(user_id, session_id)
+        deliverable_service.delete_by_session(user_id, session_id)
+
+    session_service = SessionService(repo, history_service, cleanup=_cleanup_session)
     dashboard_service = DashboardService(user_service, vector_store, repo)
     request_log_service = RequestLogService(repo)
     request_stats = RequestStats(cache)   # 请求统计：缓存累加，独立于 request_logs 与环境
@@ -202,6 +207,7 @@ def build_container(cfg: AppConfig) -> Container:
         "database_service": database_service,
         "log_service": log_service,
         "tool_service": tool_service,
+        "deliverable_service": deliverable_service,
         "chunk_parent_store": chunk_parent_store,
     }
 
@@ -229,7 +235,7 @@ def build_container(cfg: AppConfig) -> Container:
     # ── Prompt 管理（identity / workflow / style；保存后热重载 SystemContext） ──
     from modules.prompt.service import PromptService
     container.services["prompt_service"] = PromptService(
-        prompts_dir=os.path.join(_project_root, "prompts"),
+        prompts_dir=prompts_dir,
         reloader=lambda: getattr(system.tool_loop.system_context, "reload", lambda: None)(),
     )
 

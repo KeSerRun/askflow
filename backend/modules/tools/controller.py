@@ -13,7 +13,7 @@ from agent.tools import registry as tool_registry
 from agent.tools.registry import ToolContext
 from config import conf
 from core.concurrency import to_thread
-from core.deps import require_admin, system, tool_service
+from core.deps import deliverable_service, require_admin, system, tool_service
 
 from . import vo as views
 
@@ -117,7 +117,7 @@ async def upload_tool_source(
     file: UploadFile = File(...),
     user: dict = Depends(require_admin),
 ):
-    """上传自定义工具源代码（仅 .py），保存到 ``data/custom_tools/{name}.py`` 并校验模块可加载。"""
+    """上传自定义工具源代码（仅 .py），保存到 ``template/custom_tools/{name}.py`` 并校验模块可加载。"""
     if not file.filename or not file.filename.lower().endswith(".py"):
         raise HTTPException(status_code=400, detail="仅支持 .py 源码文件")
     content = await file.read()
@@ -145,6 +145,7 @@ async def test_tool(name: str, body: ToolTestBody, user: dict = Depends(require_
         vector_store=getattr(system, "vector_store", None),
         data_store=getattr(system, "data_store", None),
         session_id="tool-admin-test",
+        partition=str(user.get("user_id")) if user.get("user_id") is not None else None,
         workflow_router=getattr(
             getattr(getattr(system, "tool_loop", None), "system_context", None),
             "workflow_router", None,
@@ -152,6 +153,7 @@ async def test_tool(name: str, body: ToolTestBody, user: dict = Depends(require_
         config=conf,
         cache=getattr(system, "cache", None),
         object_store=getattr(system, "object_store", None),
+        deliverable_service=deliverable_service,
     )
     try:
         result = await to_thread(

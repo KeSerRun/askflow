@@ -102,7 +102,7 @@ class QueryService:
         return styles
 
     def workflows(self) -> list:
-        """可用工作流列表（由 backend/prompts/workflow/ 自动发现）。"""
+        """可用工作流列表（由 backend/template/prompts/workflow/ 自动发现）。"""
         return self._runner.tool_loop.system_context.workflow_router.get_workflow_list()
 
     # ── 问答 ──

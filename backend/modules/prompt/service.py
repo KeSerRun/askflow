@@ -1,9 +1,9 @@
 """modules.prompt.service —— Prompt（系统提示词）管理用例。
 
-管理 ``backend/prompts`` 目录下的三类提示词：
-- **identity**：``prompts/identity/{Name}.md``（目录，多个身份预置，可切换当前身份）；
-- **workflow**：``prompts/workflow/{Name}.md``（frontmatter + 正文）；
-- **style**：``prompts/style/{name}/SKILL.md``（frontmatter + 正文）。
+管理 ``template/prompts`` 目录下的三类提示词：
+- **identity**：``template/prompts/identity/{Name}.md``（目录，多个身份预置，可切换当前身份）；
+- **workflow**：``template/prompts/workflow/{Name}.md``（frontmatter + 正文）；
+- **style**：``template/prompts/style/{name}/SKILL.md``（frontmatter + 正文）。
 
 保存 / 删除 / 切换身份后通过组合根注入的 ``reloader`` 触发 ``SystemContext`` 热重载，
 改动对后续对话立即生效（无需重启）。
@@ -31,7 +31,7 @@ class PromptService:
         """初始化。
 
         Args:
-            prompts_dir: ``backend/prompts`` 目录。
+            prompts_dir: ``template/prompts`` 目录。
             reloader: 可选回调，保存/删除后触发 SystemContext 重载。
         """
         self.root = Path(prompts_dir)
@@ -262,14 +262,6 @@ class PromptService:
     def _item_path(self, category: str, name: str) -> Path:
         name = self._name(name, label="名称")
         return self._dir_for(category) / f"{name}.md"
-
-    def list_category(self, category: str) -> list[dict]:
-        data = self.overview()
-        if category == "workflow":
-            return data.get("workflows", [])
-        if category == "style":
-            return data.get("styles", [])
-        return data.get("identities", [])
 
     def get_item(self, category: str, name: str) -> dict:
         path = self._item_path(category, name)

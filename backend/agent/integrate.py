@@ -3,11 +3,10 @@
 包括：会话历史管理、风格切换检测、流式/非流式问答、CLI 命令分发。
 """
 
-import os
 import threading
 
 from config.app_config import AppConfig  # noqa: F401  # 便于按名引用
-from config.paths import _project_root as _backend_root
+from config.paths import prompts_dir
 from infra.util.logger import logger
 
 from .checkpoint import CheckpointStore
@@ -35,7 +34,7 @@ class IntegratedSystem:
         self.chat_client = container.chat_model
         self.vector_store = container.vector_store
 
-        self.system_context = SystemContext(os.path.join(_backend_root, "prompts"))
+        self.system_context = SystemContext(prompts_dir)
         self.cache = getattr(container, "cache", None)  # 与存储层共用的缓存实例
         self.object_store = getattr(container, "object_store", None)
 
@@ -56,6 +55,7 @@ class IntegratedSystem:
             checkpoint_store=self.checkpoint_store,
             cache=self.cache,
             object_store=self.object_store,
+            deliverable_service=getattr(container, "services", {}).get("deliverable_service"),
         )
 
         self.session_last_style: dict[str, str] = {}

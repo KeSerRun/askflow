@@ -91,6 +91,50 @@ export const useAdminStore = defineStore('admin', () => {
     return res.data
   }
 
+  // --- 交付物模板 ---
+  const deliverableTemplates = ref([])
+
+  async function fetchDeliverableTemplates() {
+    const res = await apiCall(() => axios.get('/api/admin/deliverables/templates'))
+    deliverableTemplates.value = res.data?.templates || []
+    return deliverableTemplates.value
+  }
+
+  async function fetchDeliverableTemplate(name) {
+    const res = await apiCall(() =>
+      axios.get(`/api/admin/deliverables/templates/${encodeURIComponent(name)}`))
+    return res.data
+  }
+
+  async function saveDeliverableTemplate(name, payload) {
+    const res = await apiCall(() =>
+      axios.put(`/api/admin/deliverables/templates/${encodeURIComponent(name)}`, payload))
+    await fetchDeliverableTemplates()
+    return res.data
+  }
+
+  async function deleteDeliverableTemplate(name) {
+    const res = await apiCall(() =>
+      axios.delete(`/api/admin/deliverables/templates/${encodeURIComponent(name)}`))
+    await fetchDeliverableTemplates()
+    return res.data
+  }
+
+  async function previewDeliverableTemplate(name) {
+    // 返回 PDF blob（调用方自行 objectURL 打开）
+    const res = await axios.post(
+      `/api/admin/deliverables/templates/${encodeURIComponent(name)}/preview`,
+      null, { responseType: 'blob' },
+    )
+    return res.data
+  }
+
+  async function resetDeliverableTemplates() {
+    const res = await apiCall(() => axios.post('/api/admin/deliverables/templates/reset'))
+    await fetchDeliverableTemplates()
+    return res.data
+  }
+
   // --- 用户管理 ---
   const usersData = ref({ total: 0, items: [] })
 
@@ -371,6 +415,9 @@ export const useAdminStore = defineStore('admin', () => {
     serverResources, fetchServerResources, resetRequestStats,
     healthData, healthLoading, fetchHealth,
     configData, configSchema, fetchConfig, fetchConfigSchema, updateConfig, restartBackend,
+    deliverableTemplates, fetchDeliverableTemplates, fetchDeliverableTemplate,
+    saveDeliverableTemplate, deleteDeliverableTemplate, previewDeliverableTemplate,
+    resetDeliverableTemplates,
     usersData, fetchUsers, createUser, deleteUser, changeUserRole, resetUserPassword,
     dbStats, dbChunks, systemDocs, systemDocsTotal,
     fetchDbStats, fetchDbChunks, fetchDbMdView, mdviewEmbed, mdviewRemove, fetchChunkParent,

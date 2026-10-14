@@ -11,6 +11,7 @@ const AdminDashboard = () => import('@/views/admin/AdminDashboard.vue')
 const AdminSettings = () => import('@/views/admin/AdminSettings.vue')
 const AdminMembers = () => import('@/views/admin/AdminMembers.vue')
 const AdminDatabase = () => import('@/views/admin/AdminDatabase.vue')
+const AdminDeliverables = () => import('@/views/admin/AdminDeliverables.vue')
 const AdminLogs = () => import('@/views/admin/AdminLogs.vue')
 const AdminTools = () => import('@/views/admin/AdminTools.vue')
 const AdminPrompts = () => import('@/views/admin/AdminPrompts.vue')
@@ -37,6 +38,7 @@ const routes = [
             { path: 'logs', component: AdminLogs, meta: { title: '日志管理' } },
             { path: 'tools', component: AdminTools, meta: { title: '工具管理' } },
             { path: 'prompts', component: AdminPrompts, meta: { title: 'Prompt 管理' } },
+            { path: 'deliverables', component: AdminDeliverables, meta: { title: '交付物模板' } },
             { path: 'settings', component: AdminSettings, meta: { title: '系统设置' } },
         ],
     },

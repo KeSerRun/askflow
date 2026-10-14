@@ -2,7 +2,7 @@
 
 import unittest
 
-from agent.tools.registry import ToolRegistry
+from agent.tools.registry import BUILTIN_TOOLS, ToolRegistry
 from infra.adapters.storage import SqliteRepo
 from modules.tools import ToolService
 
@@ -15,7 +15,7 @@ class ToolServiceTest(unittest.TestCase):
     def test_seed_is_idempotent(self):
         first = self.svc.seed_builtins()
         second = self.svc.seed_builtins()
-        self.assertEqual(first, 17)
+        self.assertEqual(first, len(BUILTIN_TOOLS))
         self.assertEqual(second, 0)
 
     def test_runtime_defs_include_builtins(self):
@@ -33,7 +33,7 @@ class ToolServiceTest(unittest.TestCase):
         self.svc.seed_builtins()
         reg = ToolRegistry()
         reg.load_defs(self.svc.runtime_defs())
-        self.assertEqual(len(reg._tools), 17)
+        self.assertEqual(len(reg._tools), len(BUILTIN_TOOLS))
         out = reg.dispatch(
             "set_goal", '{"goal": "Briefing"}',
             ctx=ToolContextAdapter(),

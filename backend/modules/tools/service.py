@@ -32,15 +32,16 @@ _SEED_ORDER = {spec["name"]: i for i, spec in enumerate(BUILTIN_TOOLS)}
 class ToolService:
     """工具定义的持久化用例。"""
 
-    def __init__(self, repo: object, *, data_dir: str | None = None):
+    def __init__(self, repo: object, *, custom_tools_dir: str | None = None):
         """初始化。
 
         Args:
             repo: 通用仓储（collection="agent_tools"，返回 AgentTool 实体）。
-            data_dir: 存储数据根目录（自定义工具源码目录 ``{data_dir}/custom_tools``）。
+            custom_tools_dir: 自定义工具源码目录（``custom_tools.{name}`` 模块从此目录加载）；
+                为空则禁用自定义工具源码的上传 / 读取。
         """
         self._repo = repo
-        self._data_dir = (data_dir or "").rstrip("/\\")
+        self._custom_dir = (custom_tools_dir or "").rstrip("/\\")
 
     # ── 表结构 ──
 
@@ -209,8 +210,8 @@ class ToolService:
     # ── 自定义工具源码（上传 .py → 落成 custom_tools 模块） ──
 
     def custom_tools_dir(self) -> str:
-        """自定义工具源码目录：``{data_dir}/custom_tools``。"""
-        return os.path.join(self._data_dir, "custom_tools") if self._data_dir else ""
+        """自定义工具源码目录：``template/custom_tools``。"""
+        return self._custom_dir
 
     def save_custom_source(self, name: str, content: bytes) -> dict:
         """保存自定义工具源码：写入 ``custom_tools/{name}.py`` 并校验可作为模块加载。
@@ -218,7 +219,7 @@ class ToolService:
         Raises:
             InvalidInput: 未配置目录 / 工具名非法 / 源码为空 / 模块加载失败或缺 handle。
         """
-        if not self._data_dir:
+        if not self._custom_dir:
             raise InvalidInput("未配置存储数据目录，无法保存源码")
         name = (name or "").strip()
         if not _MODULE_NAME_RE.match(name):
@@ -253,7 +254,7 @@ class ToolService:
             NotFound: 文件不存在。
         """
         name = (name or "").strip()
-        path = os.path.join(self.custom_tools_dir(), f"{name}.py") if self._data_dir else ""
+        path = os.path.join(self.custom_tools_dir(), f"{name}.py") if self._custom_dir else ""
         if not path or not os.path.isfile(path):
             raise NotFound(f"自定义源码不存在: {name}.py")
         with open(path, encoding="utf-8") as f:
@@ -262,7 +263,7 @@ class ToolService:
     def delete_custom_source(self, name: str) -> None:
         """删除自定义源码文件（不存在则忽略）。"""
         name = (name or "").strip()
-        if not self._data_dir:
+        if not self._custom_dir:
             return
         path = os.path.join(self.custom_tools_dir(), f"{name}.py")
         if os.path.isfile(path):

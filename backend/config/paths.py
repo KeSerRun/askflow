@@ -18,6 +18,15 @@ _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _dotenv_file = os.path.join(_project_root, ".env")
 _env_default_file = os.path.join(_project_root, ".env.default")
 
+# ── 模板类资源：可自定义 / 可管理的内容集中到 template/ ──
+#   template/prompts/        提示词（identity / style / workflow）
+#   template/deliverable/    交付物模板（Jinja2 HTML 的 JSON）
+#   template/custom_tools/   自定义工具源码（custom_tools.{name} 模块）
+template_dir = os.path.join(_project_root, "template")
+prompts_dir = os.path.join(template_dir, "prompts")
+deliverable_templates_dir = os.path.join(template_dir, "deliverable")
+custom_tools_dir = os.path.join(template_dir, "custom_tools")
+
 
 def setpath() -> None:
     """将项目根（backend/）加入 sys.path，保证 ``modules/infra/...`` 等顶层包可导入。

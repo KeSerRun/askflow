@@ -79,6 +79,7 @@ class ToolLoop:
         checkpoint_store: CheckpointStore | None = None,
         cache: object = None,
         object_store: object = None,
+        deliverable_service: object = None,
     ):
         """初始化 ToolLoop。
 
@@ -91,6 +92,7 @@ class ToolLoop:
             checkpoint_store: 断点快照存储（None 则不启用 checkpoint/续跑）。
             cache: 与存储层共用的缓存实例（工具结果缓存；None 则不缓存）。
             object_store: 对象存储适配器（MinIO），供文档类工具读取文件内容。
+            deliverable_service: 交付物服务（create_deliverable 等工具使用）。
         """
         self.cfg = cfg
         self.chat_client = chat_client
@@ -100,6 +102,7 @@ class ToolLoop:
         self.checkpoint_store = checkpoint_store
         self.cache = cache
         self.object_store = object_store
+        self.deliverable_service = deliverable_service
         self.graph = self._build_graph()
 
     # ── 图构建 ──
@@ -192,6 +195,8 @@ class ToolLoop:
             config=self.cfg,
             cache=self.cache,
             object_store=self.object_store,
+            deliverable_service=self.deliverable_service,
+            emit_event=(extra or {}).get("emit_event"),
         )
 
     # ── LLM 调用归一化 ──

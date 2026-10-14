@@ -46,6 +46,10 @@ class ToolContext:
     cache: object | None = None
     # 工作流路由（read_workflow 等需要）
     workflow_router: object | None = None
+    # 交付物服务（create_deliverable 等需要，组合根注入）
+    deliverable_service: object | None = None
+    # 向前端推送事件（流式下的 emit_event；非流式为 None）
+    emit_event: Callable[[dict], None] | None = None
 
 
 @dataclass

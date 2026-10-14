@@ -29,6 +29,7 @@ from modules.auth import controller as auth
 from modules.config import controller as admin_config
 from modules.dashboard import controller as admin_dashboard
 from modules.database import controller as admin_database
+from modules.deliverable import controller as deliverables
 from modules.document import controller as documents
 from modules.frontend import controller as frontend
 from modules.health import controller as health_check
@@ -80,6 +81,8 @@ app.include_router(admin_tools.router)
 app.include_router(admin_config.router)
 app.include_router(admin_dashboard.router)
 app.include_router(admin_database.router)
+app.include_router(deliverables.admin_router)
+app.include_router(deliverables.router)
 app.include_router(auth.router)
 app.include_router(sessions.router)
 app.include_router(sessions.admin_router)
