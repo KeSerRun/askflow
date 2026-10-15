@@ -63,6 +63,9 @@ class CachedVectorStore:
     def count(self) -> int:
         return self._read("count", (), lambda: self._store.count())
 
+    def get_partitions(self) -> list[str]:
+        return self._read("partitions", (), lambda: self._store.get_partitions())
+
     # ── 写（失效） ──
 
     def add_documents(self, documents):
@@ -70,13 +73,17 @@ class CachedVectorStore:
         self._bump()
         return result
 
-    def store_documents_from_dir(self, directory):
-        result = self._store.store_documents_from_dir(directory)
+    def store_documents_from_dir(self, directory, partition: str = "__system__"):
+        """入库（写操作，结束后使读缓存失效）。
+
+        ``partition`` 为知识库名（向量库 partition 字段值），需与底层实现保持一致。
+        """
+        result = self._store.store_documents_from_dir(directory, partition)
         self._bump()
         return result
 
-    def delete_by_sources(self, sources):
-        result = self._store.delete_by_sources(sources)
+    def delete_by_sources(self, sources, partition=None):
+        result = self._store.delete_by_sources(sources, partition)
         self._bump()
         return result
 

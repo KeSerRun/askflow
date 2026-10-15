@@ -3,7 +3,8 @@
 - ``DocumentService``：
   - **会话附件暂存**：对话页上传的附件按 ``sessions/{user}/{session_id}/`` 隔离存放，
     只暂存、**不解析不入向量库**（解析产物为 md 供会话内工具检索）；受 ``max_session_mb`` 限制；
-  - **系统文档入库**：``upload()`` 保存原始文件（MinIO）+ MinerU 解析 + 向量化（管理端使用，进 ``__system__``）；
+  - **知识库文档入库**：``upload()`` 保存原始文件（MinIO）+ MinerU 解析 + 向量化（管理端使用，
+    按知识库名进 ``uploads/{partition}/``）；
   - **图片读取**：供答案中的图片直链（``read_image`` / ``read_image_global``）。
 
 文件存储统一走 ``FileStore``（**仅对象存储，不读写本地 data 目录**）：
@@ -132,7 +133,7 @@ class DocumentService:
         self._vector.delete_by_sources([os.path.basename(filename)])
 
     def index_file(self, user: str, filename: str) -> None:
-        """解析并入库单个文件（只进系统分区），chunk 产物上传回对象存储。
+        """解析并入库单个文件（进 ``user`` 指定的知识库分区），chunk 产物上传回对象存储。
 
         把原始文件物化到系统临时目录 → 本地解析/向量化 →
         产物上传回对象存储 → 清理临时物化文件。
@@ -143,7 +144,7 @@ class DocumentService:
         if proxy is None:
             raise NotFound(f"原文件未找到: {name}")
 
-        self._vector.store_documents_from_dir(proxy)
+        self._vector.store_documents_from_dir(proxy, user)
 
         stem = Path(proxy).stem
         co = Path(proxy).parent / "chunk_out" / stem
@@ -352,21 +353,38 @@ class DocumentService:
     def _media_of(name: str) -> str:
         return mimetypes.guess_type(name)[0] or "application/octet-stream"
 
-    def read_image(self, doc_stem: str, img_name: str) -> tuple[bytes, str, str] | None:
+    def read_image(self, doc_stem: str, img_name: str,
+                     partition: str | None = None) -> tuple[bytes, str, str] | None:
         """按 doc_stem 定位 MinerU 解析图片并读取字节。
+
+        Args:
+            doc_stem: 文档名/ stem（不含扩展名）。
+            img_name: 图片名（可带 ``images/`` 前缀）。
+            partition: 知识库名（向量库 partition）；留空则依次探测已知分区。
 
         Returns:
             tuple ``(bytes, media_type, filename)`` 或 None。
         """
         img_name = img_name.rstrip("/")
         stems = {Path(doc_stem).name, Path(doc_stem).stem}
-        for s in sorted(stems, key=len, reverse=True):
-            for item in self._files.list_all(f"uploads/__system__/chunk_out/{s}"):
-                if match_img_key(item["name"], img_name):
-                    data = self._files.get_bytes(item["name"])
-                    if data:
-                        return data, self._media_of(item["name"]), os.path.basename(item["name"])
+        parts = [partition] if partition else self._known_partitions()
+        for part in parts:
+            for s in sorted(stems, key=len, reverse=True):
+                for item in self._files.list_all(f"uploads/{part}/chunk_out/{s}"):
+                    if match_img_key(item["name"], img_name):
+                        data = self._files.get_bytes(item["name"])
+                        if data:
+                            return data, self._media_of(item["name"]), os.path.basename(item["name"])
         return None
+
+    def _known_partitions(self) -> list[str]:
+        """探测已存在文档对象的知识库分区（未指定 partition 时的回退查找范围）。"""
+        try:
+            parts = self._files.list_child_dirs("uploads/")
+        except Exception:  # noqa: BLE001
+            parts = []
+        # 历史数据在 __system__，置前优先命中
+        return sorted(parts, key=lambda p: (p != "__system__", p))
 
     def read_query_image(self, key: str) -> tuple[bytes, str, str] | None:
         """读取对话页粘贴图片（``sessions/{user_id}/{session_id}/query_img/...``）。
@@ -388,7 +406,7 @@ class DocumentService:
 
         与会话附件/知识库图片共用同一入口：键形如
         ``sessions/{user}/{session_id}/chunk_out/{stem}/images/img_0001.png`` 或
-        ``uploads/__system__/chunk_out/{stem}/images/img_0001.png``。
+        ``uploads/{知识库名}/chunk_out/{stem}/images/img_0001.png``。
 
         Returns:
             tuple ``(bytes, media_type, filename)`` 或 None。
@@ -412,11 +430,12 @@ class DocumentService:
         img_name = img_name.rstrip("/")
         if img_name.startswith("images/"):
             img_name = img_name[7:]
-        for item in self._files.list_all("uploads/__system__/chunk_out"):
-            if match_img_key(item["name"], img_name):
-                data = self._files.get_bytes(item["name"])
-                if data:
-                    return data, self._media_of(item["name"]), os.path.basename(item["name"])
+        for part in self._known_partitions():
+            for item in self._files.list_all(f"uploads/{part}/chunk_out"):
+                if match_img_key(item["name"], img_name):
+                    data = self._files.get_bytes(item["name"])
+                    if data:
+                        return data, self._media_of(item["name"]), os.path.basename(item["name"])
         return None
 
     # ── 上传校验 ──

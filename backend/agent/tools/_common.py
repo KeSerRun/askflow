@@ -35,18 +35,18 @@ def _format_chunk(idx: int, chunk: Document) -> str:
     if chunk_type and chunk_type != "text":
         parts.append(chunk_type)
     partition = (meta.get("partition") or "").strip()
-    if partition == SYSTEM_PARTITION:
-        parts.append("📖 系统文档")
-    elif partition:
-        parts.append("📄 用户文档")
+    if partition and partition != SYSTEM_PARTITION:
+        parts.append(f"📚 {partition}")     # 所属知识库
     chunk_id = (meta.get("id") or "")[:8]
     id_tag = f" [id={chunk_id}]" if chunk_id else ""
     header = f"【片段 {idx} | {' | '.join(parts)}】{id_tag}" if parts else f"【片段 {idx}】{id_tag}"
     body = chunk.page_content.strip()
     img_path = (meta.get("img_path") or "").strip()
     if img_path and chunk_type in ("image", "chart") and source:
-        stem = Path(source).stem
-        img_md = f"\n\n![图](/api/documents/image/{stem}/{img_path})"
+        stem = urllib.parse.quote(Path(source).stem)
+        img = urllib.parse.quote(img_path)
+        q = f"&partition={urllib.parse.quote(partition)}" if partition else ""
+        img_md = f"\n\n![图](/api/documents/image/{stem}/{img}?{q.lstrip('&')})"
         return f"{header}\n{body}{img_md}"
     return f"{header}\n{body}"
 
@@ -130,6 +130,34 @@ def _first_text_key(store, prefix: str) -> str | None:
     return None
 
 
+def _known_partitions(store) -> list[str]:
+    """探测已有文档的知识库分区名（``uploads/`` 下的一级目录）。
+
+    文档按知识库分区存放（``uploads/{知识库名}/...``），工具层不假定具体分区，
+    需要跨库查找时用它枚举候选分区；``__system__`` 置前（历史数据）。
+    """
+    if store is None:
+        return []
+    try:
+        parts: set[str] = set()
+        for key in _iter_keys(store, "uploads/"):
+            tail = key[len("uploads/"):]
+            if "/" not in tail:
+                continue
+            parts.add(tail.split("/", 1)[0])
+    except Exception:  # noqa: BLE001
+        return []
+    return sorted(parts, key=lambda p: (p != SYSTEM_PARTITION, p))
+
+
+def _partition_candidates(store, partition: str | None = None) -> list[str]:
+    """分区候选列表：指定了就用指定的，否则探测全部（含历史 ``__system__``）。"""
+    if partition:
+        return [partition]
+    parts = _known_partitions(store)
+    return parts or [SYSTEM_PARTITION]
+
+
 def _session_ns(ctx) -> str:
     """当前会话对象前缀：``sessions/{partition}/{session_id}``（缺上下文返回空）。"""
     part = (getattr(ctx, "partition", "") or "").strip()
@@ -187,13 +215,14 @@ def replace_img_placeholders(text: str, ctx, *, stem: str) -> str:
                         return k
             except Exception:  # noqa: BLE001
                 pass
-        # 其次系统文档
-        try:
-            for k in _iter_keys(store, f"uploads/{SYSTEM_PARTITION}/chunk_out/{Path(stem).stem}"):
-                if match_img_key(k, img_name):
-                    return k
-        except Exception:  # noqa: BLE001
-            pass
+        # 其次知识库文档（跨分区查找）
+        for part in _partition_candidates(store):
+            try:
+                for k in _iter_keys(store, f"uploads/{part}/chunk_out/{Path(stem).stem}"):
+                    if match_img_key(k, img_name):
+                        return k
+            except Exception:  # noqa: BLE001
+                continue
         return None
 
     def _sub(m: _re.Match) -> str:
@@ -321,33 +350,42 @@ def rrf_rerank(
     return merged
 
 
-def _read_system_text(ctx, filename: str) -> str | None:
-    """读取系统分区文档的全文（从对象存储，读 ``.txt``，仅 ``__system__`` 分区）。"""
+def _read_system_text(ctx, filename: str, partition: str | None = None) -> str | None:
+    """读取知识库文档的全文（从对象存储读 ``.txt``）。
+
+    文档按知识库分区存放；未指定 ``partition`` 时按候选分区依次查找
+    （同名文档优先命中历史 ``__system__`` 分区）。
+    """
     store = _store(ctx)
     if store is None:
         return None
     stem = Path(filename).stem
-    key = _first_text_key(store, f"uploads/{SYSTEM_PARTITION}/chunk_out/{stem}")
-    if key is None:
-        return None
-    data = store.get_bytes(key)
-    return data.decode("utf-8", errors="replace") if data else None
+    for part in _partition_candidates(store, partition):
+        key = _first_text_key(store, f"uploads/{part}/chunk_out/{stem}")
+        if key is None:
+            continue
+        data = store.get_bytes(key)
+        if data:
+            return data.decode("utf-8", errors="replace")
+    return None
 
 
-def _read_doc_text(ctx, filename: str) -> str | None:
-    """读取文档全文：系统分区优先，其次当前会话附件（均从对象存储）。"""
-    text = _read_system_text(ctx, filename)
+def _read_doc_text(ctx, filename: str, partition: str | None = None) -> str | None:
+    """读取文档全文：知识库文档优先，其次当前会话附件（均从对象存储）。"""
+    text = _read_system_text(ctx, filename, partition)
     if text is not None:
         return text
     return _read_session_text(ctx, filename)
 
 
-def _get_file_stats(filename: str, *, object_store: object = None) -> dict:
-    """获取系统分区文档的元信息（大小、修改时间、类型）。
+def _get_file_stats(filename: str, *, object_store: object = None,
+                    partition: str | None = None) -> dict:
+    """获取知识库文档的元信息（大小、修改时间、类型）。
 
     Args:
         filename: 文档文件名。
         object_store: 对象存储适配器（读取正文大小）。
+        partition: 知识库分区名；留空则跨分区查找。
 
     Returns:
         包含 'size'、'mtime'、'type' 三个键的字典，各字段可能为空字符串。
@@ -355,8 +393,10 @@ def _get_file_stats(filename: str, *, object_store: object = None) -> dict:
     stats = {"size": "", "mtime": "", "type": ""}
     if object_store is not None:
         stem = Path(filename).stem
-        key = _first_text_key(object_store, f"uploads/{SYSTEM_PARTITION}/chunk_out/{stem}")
-        if key:
+        for part in _partition_candidates(object_store, partition):
+            key = _first_text_key(object_store, f"uploads/{part}/chunk_out/{stem}")
+            if not key:
+                continue
             data = object_store.get_bytes(key)
             if data:
                 size = len(data)
@@ -366,6 +406,7 @@ def _get_file_stats(filename: str, *, object_store: object = None) -> dict:
                     stats["size"] = f"{size / 1024:.0f}KB"
                 else:
                     stats["size"] = f"{size / 1024 / 1024:.1f}MB"
+                break
     ext = Path(filename).suffix.lower()
     if ext == ".pdf":
         stats["type"] = "PDF"
@@ -424,9 +465,10 @@ def _resolve_image_bytes(ctx, ref: str):
         if len(segs) != 2:
             return None
         stem, img_name = segs
-        for k in _iter_keys(store, f"uploads/{SYSTEM_PARTITION}/chunk_out/{Path(stem).stem}"):
-            if match_img_key(k, img_name):
-                return store.get_bytes(k)
+        for part in _partition_candidates(store):
+            for k in _iter_keys(store, f"uploads/{part}/chunk_out/{Path(stem).stem}"):
+                if match_img_key(k, img_name):
+                    return store.get_bytes(k)
         return None
 
     if "://" in ref or ref.startswith("/"):
@@ -444,6 +486,7 @@ def _hybrid_retrieve(
     retrieval_top_k: int | None = None,
     top_n: int | None = None,
     chunk_filter: str = "mixed",
+    partition_filter: str | None = None,
 ) -> list[Document]:
     """多模态混合检索：文本与图片各自向量化检索，按 RRF 重排融合。
 
@@ -452,6 +495,7 @@ def _hybrid_retrieve(
     - 全部结果按 RRF 合并去重；
     - ``chunk_filter`` 控制**输出作用域**：``text`` 只保留文本块，``image`` 只保留图块，
       ``mixed`` 全部保留（输入 queries/images 不受其影响）。
+    - ``partition_filter`` 限定检索的知识库分区（知识库名）。
 
     Args:
         ctx: ToolContext（含 vector_store / object_store）。
@@ -460,6 +504,7 @@ def _hybrid_retrieve(
         retrieval_top_k: 单个 query 的候选数。
         top_n: 返回前 N 条；None 返回全部。
         chunk_filter: 输出块类型过滤（"mixed" / "text" / "image"）。
+        partition_filter: 知识库分区名（知识库名）。
 
     Returns:
         按 RRF 分数降序排列的 Document 列表（含 source/chunk_type/img_path）。
@@ -476,7 +521,10 @@ def _hybrid_retrieve(
             qid += 1
             continue
         try:
-            results = vs.search(query=str(q), top_k=k, chunk_filter=chunk_filter) or []
+            results = vs.search(
+                query=str(q), top_k=k, chunk_filter=chunk_filter,
+                partition_filter=partition_filter
+            ) or []
         except Exception as e:
             logger.error(f"文本检索失败 (q={q!r}): {e}")
             results = []
@@ -492,7 +540,10 @@ def _hybrid_retrieve(
             continue
         try:
             vec = vs.embed_image_bytes(data)
-            results = vs.search_by_vector(vec, top_k=k, chunk_filter=chunk_filter) or []
+            results = vs.search_by_vector(
+                vec, top_k=k, chunk_filter=chunk_filter,
+                partition_filter=partition_filter
+            ) or []
         except Exception as e:
             logger.error(f"图片检索失败 ({str(ref)[:40]}): {e}")
             results = []

@@ -20,6 +20,7 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -35,7 +36,7 @@ def match_img_key(key: str, img_name: str) -> bool:
     """判断对象键是否匹配引用的图片名（支持 ``images/`` 前缀、子目录与模糊名）。
 
     Args:
-        key: 对象键（形如 ``uploads/__system__/chunk_out/{stem}/images/img_0001.jpg``）。
+        key: 对象键（形如 ``uploads/{知识库名}/chunk_out/{stem}/images/img_0001.jpg``）。
         img_name: 引用名（可为 ``img_0001.jpg`` 或 ``images/img_0001.jpg``）。
 
     Returns:
@@ -57,6 +58,9 @@ def match_img_key(key: str, img_name: str) -> bool:
 class FileStore:
     """文档文件存储：仅对象存储的读写面。"""
 
+    # list_child_dirs 的结果缓存秒数（列举递归，代价较高）
+    _DIR_CACHE_TTL = 30.0
+
     def __init__(self, object_store: object | None = None, tmp_root: str = ""):
         """初始化。
 
@@ -70,6 +74,8 @@ class FileStore:
         os.makedirs(self._sandbox, exist_ok=True)
         # 已物化到临时沙盒的对象：key -> 本地路径
         self._materialized: dict[str, str] = {}
+        # 一级子目录缓存：prefix -> (时间戳, [子目录名])
+        self._dir_cache: dict[str, tuple[float, list[str]]] = {}
 
     # ── 基础 ──
 
@@ -144,6 +150,34 @@ class FileStore:
     def size_bytes(self, prefix: str) -> int:
         """prefix 下所有对象的字节总数。"""
         return sum(item["size"] for item in self.list_all(prefix))
+
+    def list_child_dirs(self, prefix: str) -> list[str]:
+        """列出 prefix 下的**一级子目录名**（对象存储无目录概念，用键前缀推导）。
+
+        用于「有哪些知识库分区」这类探测（``uploads/`` → ``["产品手册", ...]``）。
+        底层列举是递归的，故结果做进程内短 TTL 缓存，避免高频调用反复全量扫描。
+        """
+        if self.os is None:
+            return []
+        base = self._key(prefix)
+        base = base + "/" if base else ""
+        cached = self._dir_cache.get(base)
+        now = time.time()
+        if cached and now - cached[0] < self._DIR_CACHE_TTL:
+            return list(cached[1])
+
+        dirs: set[str] = set()
+        try:
+            for obj_key, _size in self.os.list_objects(base):
+                tail = obj_key[len(base):]
+                if not tail or "/" not in tail:
+                    continue        # 只有带下一层分隔符的才算「目录」
+                dirs.add(tail.split("/", 1)[0])
+        except Exception:  # noqa: BLE001
+            pass
+        result = sorted(dirs)
+        self._dir_cache[base] = (now, result)
+        return list(result)
 
     # ── 删除 ──
 

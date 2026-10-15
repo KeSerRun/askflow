@@ -2,8 +2,7 @@
   <div class="sessions-page">
     <n-card :bordered="true" size="small">
       <n-space style="margin-bottom: 16px" :wrap="true">
-        <n-input v-model:value="fUsername" placeholder="按用户名过滤" clearable style="width: 180px" @keydown.enter="search" />
-        <n-input v-model:value="fKeyword" placeholder="按会话ID / 用户名搜索" clearable style="width: 240px" @keydown.enter="search" />
+        <n-input v-model:value="fKeyword" placeholder="按用户名 / 会话ID 搜索" clearable style="width: 260px" @keydown.enter="search" />
         <n-button type="primary" @click="search">
           <template #icon><n-icon :component="SearchOutline" /></template>搜索
         </n-button>
@@ -66,7 +65,6 @@ const message = useMessage()
 const page = ref(1)
 const pageSize = ref(20)
 const pageSizes = [10, 20, 50, 100, 200]
-const fUsername = ref('')
 const fKeyword = ref('')
 
 async function load() {
@@ -74,7 +72,6 @@ async function load() {
     await store.fetchSessions({
       page: page.value,
       page_size: pageSize.value,
-      username: fUsername.value || undefined,
       keyword: fKeyword.value || undefined,
     })
   } catch (e) { message.error(e.message) }
@@ -85,7 +82,7 @@ function changeSize(size) {
   load()
 }
 function search() { page.value = 1; load() }
-function reset() { fUsername.value = ''; fKeyword.value = ''; page.value = 1; load() }
+function reset() { fKeyword.value = ''; page.value = 1; load() }
 
 const showHistory = ref(false)
 const historyLoading = ref(false)

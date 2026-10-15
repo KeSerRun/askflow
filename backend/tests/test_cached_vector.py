@@ -11,7 +11,8 @@ class FakeVectorStore:
 
     def __init__(self):
         self.data: list[dict] = []
-        self.calls = {"metadata": 0, "sources": 0, "count": 0}
+        self.calls = {"metadata": 0, "sources": 0, "count": 0, "partitions": 0}
+        self.stored: list[tuple] = []   # (directory, partition)
 
     @property
     def metadata(self):
@@ -25,12 +26,19 @@ class FakeVectorStore:
     def get_documents(self):
         return self.get_sources()
 
+    def get_partitions(self):
+        self.calls["partitions"] += 1
+        return sorted({d["partition"] for d in self.data if d.get("partition")})
+
     def count(self):
         self.calls["count"] += 1
         return len(self.data)
 
     def add_documents(self, docs):
         self.data.extend(docs)
+
+    def store_documents_from_dir(self, directory, partition="__system__"):
+        self.stored.append((directory, partition))
 
     def delete_all(self):
         self.data = []
@@ -72,6 +80,28 @@ class CachedVectorStoreTest(unittest.TestCase):
         self.cached.delete_all()
         self.assertEqual(self.cached.count(), 0)
         self.assertEqual(self.store.calls["count"], 2)
+
+    def test_partitions_cached(self):
+        self.store.data.append({"source": "c.pdf", "partition": "kbA"})
+        self.assertEqual(self.cached.get_partitions(), ["kbA"])
+        self.assertEqual(self.cached.get_partitions(), ["kbA"])
+        self.assertEqual(self.store.calls["partitions"], 1)
+
+    def test_store_documents_from_dir_forwards_partition(self):
+        """装饰器必须把 partition 透传给底层实现（否则入库报参数错误）。"""
+        self.cached.store_documents_from_dir("/tmp/a.pdf", "产品手册")
+        self.assertEqual(self.store.stored, [("/tmp/a.pdf", "产品手册")])
+
+    def test_store_documents_from_dir_partition_defaults(self):
+        self.cached.store_documents_from_dir("/tmp/a.pdf")
+        self.assertEqual(self.store.stored, [("/tmp/a.pdf", "__system__")])
+
+    def test_store_documents_from_dir_invalidates_cache(self):
+        self.store.data.append({"source": "c.pdf", "partition": "kbA"})
+        self.assertEqual(self.cached.get_partitions(), ["kbA"])
+        self.cached.store_documents_from_dir("/tmp/a.pdf", "kbA")
+        self.assertEqual(self.cached.get_partitions(), ["kbA"])
+        self.assertEqual(self.store.calls["partitions"], 2)  # 写后读缓存已失效
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ class FakeVector:
     def __init__(self):
         self._sources: set = set()
 
-    def store_documents_from_dir(self, directory):
+    def store_documents_from_dir(self, directory, partition="__system__"):
         source = os.path.basename(directory)
         self._sources.add(source)
         chunk = os.path.join(os.path.dirname(directory), "chunk_out", os.path.splitext(source)[0])
@@ -26,7 +26,7 @@ class FakeVector:
     def get_sources(self):
         return sorted(self._sources)
 
-    def delete_by_sources(self, sources):
+    def delete_by_sources(self, sources, partition=None):
         for s in sources:
             self._sources.discard(os.path.basename(s))
 
@@ -65,7 +65,49 @@ class DocumentServiceTest(unittest.TestCase):
         self.svc.upload("__system__", "a.pdf", b"%PDF-new")
         self.assertEqual(self.vector.get_sources(), ["a.pdf"])
 
-    # ── 会话附件暂存（只落盘，不解析/不入库） ──
+    # ── MinerU 解析图片读取（回归：曾写死 __system__ 导致知识库文档图片 404） ──
+
+    def test_read_image_from_knowledge_base_partition(self):
+        """文档视图图片按 partition 读取（文档归属知识库后不再是 __system__）。"""
+        key = "uploads/产品手册/chunk_out/report/images/img_1.png"
+        self.svc._files.put(key, b"\x89PNG-fake-bytes")
+
+        found = self.svc.read_image("report", "img_1.png", "产品手册")
+        self.assertIsNotNone(found, "应能在知识库分区下找到图片")
+        data, media, name = found
+        self.assertEqual(data, b"\x89PNG-fake-bytes")
+        self.assertEqual(media, "image/png")
+        self.assertEqual(name, "img_1.png")
+
+    def test_read_image_accepts_images_prefix(self):
+        self.svc._files.put(
+            "uploads/库B/chunk_out/doc/images/img_2.jpg", b"JPEGDATA")
+        found = self.svc.read_image("doc", "images/img_2.jpg", "库B")
+        self.assertIsNotNone(found)
+        self.assertEqual(found[0], b"JPEGDATA")
+
+    def test_read_image_wrong_partition_not_leaked(self):
+        """图片隔离：指定别的知识库不应命中。"""
+        self.svc._files.put(
+            "uploads/库A/chunk_out/doc/images/img_3.png", b"AAA")
+        self.assertIsNone(self.svc.read_image("doc", "img_3.png", "库B"))
+
+    def test_read_image_without_partition_probes_known_parts(self):
+        """未指定 partition 时自动探测已有分区（历史 /documents/image/... 直链仍可用）。"""
+        self.svc._files.put(
+            "uploads/库C/chunk_out/doc/images/img_4.png", b"CCC")
+        found = self.svc.read_image("doc", "img_4.png")
+        self.assertIsNotNone(found)
+        self.assertEqual(found[0], b"CCC")
+
+    def test_read_image_global_finds_across_partitions(self):
+        self.svc._files.put(
+            "uploads/库D/chunk_out/doc/images/img_5.png", b"DDD")
+        found = self.svc.read_image_global("img_5.png")
+        self.assertIsNotNone(found)
+        self.assertEqual(found[0], b"DDD")
+
+    # ── 上传校验 ──
 
     def test_session_stage_only_writes_no_vector(self):
         saved = self.svc.save_session_files(

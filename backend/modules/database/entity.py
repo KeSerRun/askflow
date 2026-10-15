@@ -20,3 +20,23 @@ class ChunkParent(Base):
 
     id = mapped_column(String(64), primary_key=True)
     text = mapped_column(Text, nullable=False)
+
+
+class KnowledgeBase(Base):
+    """知识库（向量库 partition 的元信息）。
+
+    知识库在向量库中表现为 ``partition`` 字段值；本表持有其**目录信息**
+    （名称 / 描述 / 创建时间），使空知识库（尚未上传文档）在管理端也能列出、
+    可改名、可删除，而不必依赖向量库已有向量。
+
+    - ``id``：``partition`` 值（知识库名称，主键，与向量库 partition 一一对应）；
+    - ``description``：给 Agent 看的知识库用途描述（``list_knowledge_bases`` 工具会返回）；
+    - ``created_at``/``updated_at``：ISO 时间字符串。
+    """
+
+    __tablename__ = "knowledge_bases"
+
+    id = mapped_column(String(128), primary_key=True)
+    description = mapped_column(Text, nullable=False, default="")
+    created_at = mapped_column(String(40), nullable=False)
+    updated_at = mapped_column(String(40), nullable=False)

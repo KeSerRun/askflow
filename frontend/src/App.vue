@@ -50,9 +50,11 @@ const lightOverrides = {
   },
   Input: {
     color: '#ffffff',
-    border: '#d4cfc8',
-    borderHover: '#d4734e',
-    borderFocus: '#d4734e',
+    // 注意：naive-ui 把它当 border 简写用（``border: var(--n-border)``），
+    // 只写颜色会让样式失效 → 输入框完全无边框
+    border: '1px solid #d4cfc8',
+    borderHover: '1px solid #d4734e',
+    borderFocus: '1px solid #d4734e',
     textColor: '#1a1714',
     placeholderColor: '#6e6760',
     lineHeightTextarea: '1.6',
@@ -84,9 +86,9 @@ const darkOverrides = {
   },
   Input: {
     color: '#292524',
-    border: '#57534e',
-    borderHover: '#d4734e',
-    borderFocus: '#d4734e',
+    border: '1px solid #57534e',
+    borderHover: '1px solid #d4734e',
+    borderFocus: '1px solid #d4734e',
     textColor: '#fafaf9',
     placeholderColor: '#78716c',
     lineHeightTextarea: '1.6',

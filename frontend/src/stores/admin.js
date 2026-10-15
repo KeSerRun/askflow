@@ -182,6 +182,45 @@ export const useAdminStore = defineStore('admin', () => {
     return res.data
   }
 
+  // --- 知识库管理 ---
+  const knowledgeBases = ref([])        // 当前页（知识库管理网格展示）
+  const knowledgeBasesTotal = ref(0)
+  const allKnowledgeBases = ref([])   // 全量（下拉选择等场景，不受分页/搜索影响）
+
+  /** 拉取知识库列表（支持分页 + 模糊搜索）。 */
+  async function fetchKnowledgeBases(params = {}) {
+    const res = await apiCall(() => axios.get('/api/admin/database/knowledge_bases', { params }))
+    const data = res.data || {}
+    knowledgeBases.value = data.knowledge_bases || []
+    knowledgeBasesTotal.value = data.total ?? knowledgeBases.value.length
+    return res.data
+  }
+
+  /** 取全部知识库（不分页），供下拉选择等场景使用。 */
+  async function fetchAllKnowledgeBases() {
+    const res = await apiCall(() => axios.get('/api/admin/database/knowledge_bases', { params: { page_size: 0 } }))
+    allKnowledgeBases.value = res.data?.knowledge_bases || []
+    return allKnowledgeBases.value
+  }
+
+  async function createKnowledgeBase(name, description = '') {
+    const res = await apiCall(() => axios.post('/api/admin/database/knowledge_bases', { name, description }))
+    await fetchAllKnowledgeBases()
+    return res.data
+  }
+
+  async function updateKnowledgeBase(name, newName, description) {
+    const res = await apiCall(() => axios.put(`/api/admin/database/knowledge_bases/${encodeURIComponent(name)}`, { new_name: newName, description }))
+    await fetchAllKnowledgeBases()
+    return res.data
+  }
+
+  async function deleteKnowledgeBase(name) {
+    const res = await apiCall(() => axios.delete(`/api/admin/database/knowledge_bases/${encodeURIComponent(name)}`))
+    await fetchAllKnowledgeBases()
+    return res.data
+  }
+
   async function fetchDbChunks(params = {}) {
     const res = await apiCall(() => axios.get('/api/admin/database/chunks', { params }))
     dbChunks.value = res.data
@@ -204,8 +243,8 @@ export const useAdminStore = defineStore('admin', () => {
     return res.data
   }
 
-  async function fetchDbMdView(source) {
-    const res = await apiCall(() => axios.get('/api/admin/database/md_view', { params: { source } }))
+  async function fetchDbMdView(source, partition) {
+    const res = await apiCall(() => axios.get('/api/admin/database/md_view', { params: { source, partition } }))
     return res.data
   }
 
@@ -224,10 +263,13 @@ export const useAdminStore = defineStore('admin', () => {
     return res.data
   }
 
-  async function uploadSystemDocs(files) {
+  async function uploadSystemDocs(files, partition) {
     const form = new FormData()
     for (const f of files) form.append('files', f)
-    const res = await apiCall(() => axios.post('/api/admin/database/upload', form))
+    // partition 是后端的 Query 参数，必须放在 URL 上（放 FormData 后端收不到）
+    const res = await apiCall(() => axios.post('/api/admin/database/upload', form, {
+      params: { partition },
+    }))
     return res.data
   }
 
@@ -241,17 +283,17 @@ export const useAdminStore = defineStore('admin', () => {
     }
   }
 
-  async function deleteDocument(source) {
+  async function deleteDocument(source, partition) {
     const res = await apiCall(() =>
-      axios.delete('/api/admin/database/delete', { params: { source } })
+      axios.delete('/api/admin/database/delete', { params: { source, partition } })
     )
     await fetchDbStats()
     return res.data
   }
 
-  async function deleteSystemRawFile(source) {
+  async function deleteSystemRawFile(source, partition) {
     const res = await apiCall(() =>
-      axios.delete('/api/admin/database/system_file', { params: { source } })
+      axios.delete('/api/admin/database/system_file', { params: { source, partition } })
     )
     await fetchDbStats()
     return res.data
@@ -430,5 +472,8 @@ export const useAdminStore = defineStore('admin', () => {
     toolsData, toolsTotal, fetchTools, createTool, updateTool, deleteTool, testTool, resetBuiltinTools, resetToolCallCounts, uploadTestImage,
     uploadToolSource, fetchToolSource,
     promptsOverview, fetchPrompts, fetchPrompt, savePrompt, deletePrompt, activateIdentity,
+    knowledgeBases, knowledgeBasesTotal, allKnowledgeBases,
+    fetchKnowledgeBases, fetchAllKnowledgeBases,
+    createKnowledgeBase, updateKnowledgeBase, deleteKnowledgeBase,
   }
 })

@@ -31,9 +31,10 @@ def inline_bytes(data: bytes, filename: str) -> Response:
     return file_response(data, filename, inline=True)
 
 
-def mineru_image(document_service, doc_stem: str, img_name: str) -> Response:
+def mineru_image(document_service, doc_stem: str, img_name: str,
+                 partition: str | None = None) -> Response:
     """按 doc_stem 从对象存储返回 MinerU 图片；未找到抛 404。"""
-    found = document_service.read_image(doc_stem, img_name)
+    found = document_service.read_image(doc_stem, img_name, partition)
     if found is None:
         raise HTTPException(status_code=404, detail="image not found")
     data, media_type, _name = found

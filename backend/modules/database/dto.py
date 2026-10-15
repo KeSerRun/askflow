@@ -13,3 +13,4 @@ class MdViewActionBody(BaseModel):
     source: str = Field(min_length=1)
     page: int = Field(ge=1)
     block_idx: int = Field(ge=0)
+    partition: str | None = Field(default=None, description="知识库名；留空用 __system__")

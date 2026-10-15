@@ -27,8 +27,69 @@ from ._common import (
 from ._context import current_tool_ctx, tool
 
 
+@tool('list_knowledge_bases', concurrent_safe=True)
+def _exec_list_knowledge_bases() -> str:
+    """列出所有可用的知识库及其描述、文档数与切块数。
+
+    检索前先调用本工具了解有哪些知识库、各自收录什么内容，再据此选择目标知识库
+    调用 search_knowledge_base(partition=知识库名)。
+    """
+    ctx = current_tool_ctx()
+    repo = getattr(ctx, "data_store", None)
+    vs = getattr(ctx, "vector_store", None)
+    vector_ok = vs is not None and getattr(vs, "is_available", lambda: True)()
+
+    # 1) 目录（knowledge_bases 表）：含描述，空库也可见
+    entries: dict[str, dict] = {}
+    if repo is not None:
+        try:
+            for row in repo.find("knowledge_bases", order_by="id") or []:
+                name = str(getattr(row, "id", "") or "").strip()
+                if name:
+                    entries[name] = {
+                        "description": str(getattr(row, "description", "") or "").strip(),
+                        "documents": 0, "chunks": 0,
+                    }
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"读取知识库目录失败: {e}")
+
+    # 2) 向量库统计：补齐遗留分区，并填文档/切块数
+    if vector_ok:
+        try:
+            metadata = vs.metadata or []
+            for m in metadata:
+                part = str(m.get("partition") or "").strip()
+                if not part:
+                    continue
+                e = entries.setdefault(part, {"description": "", "documents": 0, "chunks": 0})
+                e["chunks"] += 1
+                src = m.get("source")
+                if src and src not in e.get("_sources", set()):
+                    e.setdefault("_sources", set()).add(src)
+            for e in entries.values():
+                e["documents"] = len(e.pop("_sources", set()))
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"读取向量库分区统计失败: {e}")
+
+    if not entries:
+        return "(当前没有可用的知识库。请提示用户到管理后台「数据管理 → 知识库管理」创建知识库并上传文档。)"
+    if not vector_ok and all(not e["chunks"] for e in entries.values()):
+        return ("(知识库目录如下，但向量库当前连接失败，暂时无法检索内容：\n"
+                + "\n".join(f"- **{n}**：{e['description'] or '（无描述）'}" for n, e in entries.items())
+                + "\n\n请提示用户检查 Milvus 服务是否已启动。)")
+
+    lines = ["可用知识库列表（检索时用 partition 指定名称）："]
+    for name, e in entries.items():
+        desc = e["description"] or "（无描述）"
+        lines.append(f"- **{name}**：{desc}（{e['documents']} 篇文档 / {e['chunks']} 个切块）")
+    lines.append("\n请根据上面的描述选择最相关的知识库，调用 "
+                 "search_knowledge_base(partition=\"<知识库名>\", queries=[...]) 进行检索。")
+    return "\n".join(lines)
+
+
 @tool('search_knowledge_base', concurrent_safe=True)
 def _exec_search_kb(
+    partition: Annotated[str, Field(description="知识库分区名（必填，从 list_knowledge_bases 获取）")],
     queries: Annotated[list[str] | None,
                        Field(description="文本检索查询，最多 5 个；可空（仅图片检索时省略）")] = None,
     images: Annotated[list[str] | None,
@@ -38,12 +99,16 @@ def _exec_search_kb(
     mode: Annotated[str, Field(
         description="检索输出作用域：mixed（混合，默认）/ text（只返回文本块）/ image（只返回图片块）")] = "mixed",
 ) -> str:
-    """语义检索系统知识库：将文本 queries 与图片 images 分别向量化后混合检索、RRF 重排，返回相关文本片段与图片直链。
+    """语义检索指定知识库：将文本 queries 与图片 images 分别向量化后混合检索、RRF 重排，返回相关文本片段与图片直链。
 
-    在“不知道内容在哪篇文档、按意思找”时使用；按关键词精确查证用 search_document_content，
+    必须先通过 list_knowledge_bases 获取可用知识库，再指定 partition 参数。
+    在"不知道内容在哪篇文档、按意思找”时使用；按关键词精确查证用 search_document_content，
     通读某篇文档用 read_knowledge_base_document / read_session_document。
     """
     ctx = current_tool_ctx()
+    if not partition or not partition.strip():
+        return "(未提供 partition 参数：必须指定知识库分区名，请先调用 list_knowledge_bases 查看可用知识库)"
+
     mode = (mode or "mixed").strip().lower()
     if mode not in ("mixed", "text", "image"):
         mode = "mixed"
@@ -54,15 +119,19 @@ def _exec_search_kb(
 
     top_k = int(top_k or 10)
     top_k = max(1, min(top_k, _cfg(ctx, "retrieval_top_k", 50)))
-    logger.debug(f"tool search_knowledge_base mode={mode} texts={len(texts)} images={len(image_refs)}")
+    logger.debug(
+            "tool search_knowledge_base "
+            f"partition={partition} mode={mode} texts={len(texts)} images={len(image_refs)}"
+        )
 
     chunks = _hybrid_retrieve(
         ctx, texts, image_refs,
         retrieval_top_k=_cfg(ctx, "retrieval_top_k", 50),
         chunk_filter=mode,
+        partition_filter=partition.strip(),
     )
     if not chunks:
-        return "(知识库中未检索到相关内容)"
+        return f"(知识库 [{partition}] 中未检索到相关内容)"
 
     chunks = chunks[:top_k]
 
@@ -80,7 +149,7 @@ def _exec_search_kb(
                  if str((c.metadata or {}).get("chunk_type", "")).strip() == "text")
     n_img = sum(1 for c in chunks
                 if str((c.metadata or {}).get("chunk_type", "")).strip() in ("image", "chart"))
-    parts = [f"{mode_label}检索命中 {len(chunks)} 块（文本块 {n_text} + 图片块 {n_img}）"]
+    parts = [f"[{partition}] {mode_label}检索命中 {len(chunks)} 块（文本块 {n_text} + 图片块 {n_img}）"]
     if img_lines:
         parts.append("命中图片：\n" + "\n".join(img_lines))
     parts.append(formatted)
@@ -157,9 +226,10 @@ def _exec_read_knowledge_base_document(
     offset: Annotated[int, Field(description="字符偏移，用于分页续读")] = 0,
     max_chars: Annotated[int | None, Field(description="本次最多读取字符数")] = None,
 ) -> str:
-    """读取系统知识库（__system__ 分区）某篇文档的完整正文，支持 offset/max_chars 分页续读。
+    """读取知识库中某篇文档的完整正文，支持 offset/max_chars 分页续读。
 
-    filename 为不带扩展名的文档名（先用 list_knowledge_base_files 查）；会话附件请用 read_session_document。
+    在所有知识库中按文档名查找（先用 list_knowledge_base_files 确认存在）；
+    filename 为不带扩展名的文档名。会话附件请用 read_session_document。
     """
     ctx = current_tool_ctx()
     filename = (filename or "").strip()
@@ -178,7 +248,7 @@ def _exec_read_session_document(
 ) -> str:
     """读取当前会话中已解析的上传附件的完整正文，支持 offset/max_chars 分页续读。
 
-    filename 为不带扩展名的文档名（先用 list_session_resources 查）；系统知识库文档请用 read_knowledge_base_document。
+    filename 为不带扩展名的文档名（先用 list_session_resources 查）；知识库文档请用 read_knowledge_base_document。
     """
     ctx = current_tool_ctx()
     filename = (filename or "").strip()
@@ -195,7 +265,7 @@ def _exec_list_session_resources(
 ) -> str:
     """列出当前会话的资源：上传的原始文件、粘贴/附带图片、MinerU 解析出的插图与已解析文档，含对象键/直链与大小。
 
-    可用 pattern 关键词过滤；用于查看“本会话上传了什么”并取得对象键。系统知识库文档请用 list_knowledge_base_files。
+    可用 pattern 关键词过滤；用于查看“本会话上传了什么”并取得对象键。知识库文档请用 list_knowledge_base_files。
     """
     ctx = current_tool_ctx()
     pattern = (pattern or "").strip().lower()
@@ -252,9 +322,10 @@ def _exec_list_knowledge_base_files(
     pattern: Annotated[str | None, Field(description="文件名关键词过滤")] = None,
     sort_by: Annotated[str, Field(description="排序方式：'name' 或 'time'")] = 'name',
 ) -> str:
-    """列出系统知识库（__system__ 分区）中的文档，含类型/大小/修改时间，可用 pattern 过滤、sort_by（name/time）排序。
+    """列出所有知识库中的文档，含所属知识库、类型/大小，含 pattern 过滤与 sort_by（name/time）排序。
 
-    用于查看知识库有哪些文档并取得精确文件名；会话附件请用 list_session_resources。
+    用于查看有哪些文档并取得精确文件名；需要按知识库维度浏览时先用 list_knowledge_bases；
+    会话附件请用 list_session_resources。
     """
     ctx = current_tool_ctx()
     if not ctx.vector_store or not getattr(ctx.vector_store, "is_available", lambda: True)():
@@ -262,11 +333,24 @@ def _exec_list_knowledge_base_files(
     pattern = (pattern or "").strip().lower()
     logger.debug(f"tool list_knowledge_base_files pattern={pattern!r} sort={sort_by}")
 
-    system_docs = ctx.vector_store.get_documents() or []
+    # 文档 → 所属知识库（同名文档可能分布在多个知识库）
+    src_parts: dict[str, list[str]] = {}
+    try:
+        for m in (ctx.vector_store.metadata or []):
+            src, part = m.get("source") or "", m.get("partition") or ""
+            if src:
+                parts = src_parts.setdefault(src, [])
+                if part and part not in parts:
+                    parts.append(part)
+    except Exception:  # noqa: BLE001
+        pass
+
     doc_entries = []
-    for d in system_docs:
-        s = _get_file_stats(d, object_store=getattr(ctx, "object_store", None))
-        doc_entries.append({"name": d, **s, "is_system": True})
+    for d in (ctx.vector_store.get_documents() or []):
+        parts = src_parts.get(d) or []
+        part = parts[0] if parts else None
+        s = _get_file_stats(d, object_store=getattr(ctx, "object_store", None), partition=part)
+        doc_entries.append({"name": d, "partition": part, **s})
 
     if pattern:
         doc_entries = [d for d in doc_entries if pattern in d["name"].lower()]
@@ -277,16 +361,15 @@ def _exec_list_knowledge_base_files(
     if sort_by == "time":
         doc_entries.sort(key=lambda d: (not bool(d["mtime"]), d["mtime"]), reverse=True)
     else:
-        doc_entries.sort(key=lambda d: d["name"].lower())
+        doc_entries.sort(key=lambda d: (d["name"].lower(), d["partition"] or ""))
 
     lines = []
     for d in doc_entries:
-        icon = "📖"
         info = " | ".join(p for p in [d["type"], d["size"], d["mtime"]] if p)
-        if info:
-            lines.append(f"- {icon} {d['name']}  ({info})")
-        else:
-            lines.append(f"- {icon} {d['name']}")
+        head = f"- 📖 {d['name']}"
+        if d["partition"]:
+            head += f"　[知识库：{d['partition']}]"
+        lines.append(f"{head}  ({info})" if info else head)
 
     return "知识库中的文档：\n" + "\n".join(lines)
 
@@ -382,7 +465,7 @@ def _exec_search_document_content(
     source: Annotated[str | None, Field(description="限定单篇文档名（不含扩展名）")] = None,
     max_results: Annotated[int, Field(description="最大匹配数，上限 50")] = 10,
 ) -> str:
-    """在系统知识库与会话附件的全文（txt）中按关键词精确匹配，返回命中文档名与所在行片段。
+    """在所有知识库与会话附件的全文（txt）中按关键词精确匹配，返回命中文档名与所在行片段。
 
     适合查具体数字/名称/术语的确切出处；语义模糊时改用 search_knowledge_base，source 可限定单篇文档名。
     """
@@ -399,17 +482,15 @@ def _exec_search_document_content(
         return "(知识库不可用：向量库连接失败)"
 
     try:
-        system_docs = ctx.vector_store.get_documents() or []
+        kb_docs = ctx.vector_store.get_documents() or []
     except Exception:
-        system_docs = []
+        kb_docs = []
 
-    if source_filter == "__system__":
-        doc_names = system_docs
-    elif source_filter:
+    if source_filter:
         doc_names = [source_filter]
     else:
-        # 系统文档 + 当前会话已解析的上传附件（不进向量库）
-        doc_names = list(dict.fromkeys(system_docs + _list_session_docs(ctx)))
+        # 所有知识库文档 + 当前会话已解析的上传附件（不进向量库）
+        doc_names = list(dict.fromkeys(kb_docs + _list_session_docs(ctx)))
 
     keyword_lower = keyword.lower()
     matches = []

@@ -1,11 +1,16 @@
 <template>
   <div class="auth-page">
+    <div class="auth-bg" aria-hidden="true" />
+
     <n-card class="auth-card" :bordered="false" size="huge">
-      <div class="auth-header">
+      <div class="auth-brand-bar">
         <div class="brand">
           <img :src="logoSvg" :alt="app.alt" class="brand-logo" />
           <span class="brand-name">{{ app.brand }}</span>
         </div>
+      </div>
+
+      <div class="auth-header">
         <n-h2 class="auth-title">欢迎回来</n-h2>
         <n-text depth="3">登录以继续与你的知识库对话</n-text>
       </div>

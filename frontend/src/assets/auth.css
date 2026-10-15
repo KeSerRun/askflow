@@ -1,48 +1,116 @@
 /* 登录/注册页共享样式 */
 .auth-page {
+  position: relative;
   width: 100%;
-  height: 100vh;
+  min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(ellipse at top, var(--color-primary-bg-active), transparent 60%),
-    transparent;
-  padding: 24px;
+  background: var(--color-bg-body);
+  padding: 24px 16px;
   box-sizing: border-box;
+  overflow: hidden;
+}
+
+/* 背景层：细点阵 + 顶部柔光（纯装饰，不拦截事件） */
+.auth-bg {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* 三层写在同一条 background-image 里——用 background 简写会覆盖后续层 */
+  background-image:
+    /* ① 顶部柔光 */
+    radial-gradient(ellipse 120% 70% at 50% -10%,
+      var(--color-primary-bg-active) 0%,
+      transparent 60%),
+    /* ②③ 细点阵（两层错位，视觉上更均匀） */
+    radial-gradient(circle at 1px 1px, var(--color-auth-dot) 1px, transparent 0),
+    radial-gradient(circle at 1px 1px, var(--color-auth-dot) 1px, transparent 0);
+  background-size: 100% 100%, 22px 22px, 22px 22px;
+  background-position: 0 0, 0 0, 11px 11px;
+  /* 四周淡出，避免点阵在边缘突然截止 */
+  -webkit-mask-image: radial-gradient(ellipse 85% 75% at 50% 45%, #000 35%, transparent 100%);
+  mask-image: radial-gradient(ellipse 85% 75% at 50% 45%, #000 35%, transparent 100%);
+}
+
+/* 卡片压在背景之上 */
+.auth-card {
+  position: relative;
+  z-index: 1;
 }
 
 .auth-card {
   width: 100%;
-  max-width: 420px;
+  max-width: 460px;
   box-shadow: 0 8px 32px var(--color-shadow-card), 0 2px 8px var(--color-shadow-card-secondary);
 }
 
-.auth-header {
-  text-align: center;
-  margin-bottom: 28px;
+/* 背景点阵颜色（随主题走） */
+.auth-page {
+  --color-auth-dot: rgba(120, 112, 104, 0.22);
+}
+[data-theme='dark'] .auth-page {
+  --color-auth-dot: rgba(255, 255, 255, 0.10);
+}
+
+/* 品牌标识放卡片右上角，不占左侧正文轴线 */
+.auth-brand-bar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 18px;
 }
 
 .brand {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  margin-bottom: 16px;
+  gap: 7px;
   color: var(--color-primary);
 }
 
 .brand-logo {
-  height: 28px;
+  height: 20px;
   width: auto;
 }
 
 .brand-name {
-  font-size: 18px;
+  font-size: 15px;
   font-weight: 600;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.3px;
 }
 
+/* 标题区左对齐 */
+.auth-header {
+  text-align: left;
+  margin-bottom: 24px;
+}
+
+/* 字号阶：标题 20 > 品牌/输入/按钮 15 > 标签/副标题/页脚 13 */
 .auth-title {
-  margin: 0 0 6px 0;
+  margin: 0 0 4px 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.auth-header .n-text {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+/* 表单标签：比正文更轻但更实，明确区别于输入内容 */
+.auth-card .n-form-item-label {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.auth-card .n-input__input-el,
+.auth-card .n-button {
+  font-size: 15px;
+}
+
+.auth-card .n-button {
+  font-weight: 500;
 }
 
 .auth-footer {
@@ -50,7 +118,7 @@
   justify-content: center;
   align-items: center;
   gap: 8px;
-  font-size: 14px;
+  font-size: 13px;
 }
 
 .auth-link {

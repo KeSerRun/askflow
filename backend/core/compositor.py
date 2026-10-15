@@ -198,6 +198,7 @@ def build_container(cfg: AppConfig) -> Container:
         vector_store, document_service,
         object_store=object_store,
         parent_store=(chunk_parent_store if vector_store else None),
+        repo=repo,
         workers=cfg.mineru_max_concurrency,
     )
     # 日志管理（查 app_logs / request_logs 表）+ 应用日志入库（APPLogger 附加 DB handler）

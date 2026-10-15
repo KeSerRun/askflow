@@ -13,6 +13,7 @@ import threading
 import numpy as np
 
 from core.models import Document
+from infra.util.logger import logger
 
 _QUERY_LIMIT = 64
 # Milvus 单次 query 的 (offset+limit) 上限
@@ -104,7 +105,6 @@ class MilvusVectorStore:
                 or "parent_id" not in cols
             )
             if need_rebuild:
-                from infra.util.logger import logger
                 logger.warning(
                     f"集合 {self._name} 维度 {existing}≠{self.dimension} 或缺 caption 列，重建集合（旧向量清空）"
                 )
@@ -183,6 +183,43 @@ class MilvusVectorStore:
 
     # ── 入库 ──
 
+    # VARCHAR 字段上限（与 ``_ensure_collection`` 的 schema 一致）：
+    # 写入前统一截断，避免 MinerU 抽出的超长 caption/footnote/source 直接把整批 insert 顶掉。
+    _VARCHAR_LIMITS: dict[str, int] = {
+        "doc_id": 64, "text": 65535, "source": 512, "partition": 128,
+        "chunk_type": 32, "img_path": 1024, "caption": 1024,
+        "footnote": 65535, "parent_id": 64, "timestamp": 64,
+    }
+
+    @classmethod
+    def _fit(cls, value, limit: int, field: str = "") -> str:
+        """把字符串截断到 VARCHAR 上限。
+
+        **注意单位**：Milvus 的 ``max_length`` 按 **UTF-8 字节数**校验，不是字符数
+        （中文 1 字=3 字节）。按字符截会让实际字节数仍然超限，insert 报 code=1100。
+        因此这里按字节预算逐字符累加，保证结果不超过上限。
+        """
+        s = "" if value is None else str(value)
+        if len(s.encode("utf-8")) <= limit:
+            return s
+        ellipsis = "…"
+        budget = max(1, limit - len(ellipsis.encode("utf-8")))
+        out: list[str] = []
+        used = 0
+        for ch in s:
+            n = len(ch.encode("utf-8"))
+            if used + n > budget:
+                break
+            out.append(ch)
+            used += n
+        result = "".join(out) + ellipsis
+        while len(result.encode("utf-8")) > limit:   # 双保险：字节硬切
+            result = result[:-1]
+        logger.warning(
+            f"字段 {field or '?'} 超长（{len(s.encode('utf-8'))} 字节 > {limit}），已截断后入库"
+        )
+        return result
+
     def add_documents(self, documents: list[Document]) -> None:
         import hashlib
         from datetime import datetime
@@ -225,19 +262,25 @@ class MilvusVectorStore:
             if img_data:
                 # 图：整图向量；caption 进 caption 列，text 留空；doc_id 用图片路径保证唯一
                 vec = self._embed_image(img_data)
-                img_path = meta.get("img_path", "") or ""
+                img_path = self._fit(meta.get("img_path", ""), self._VARCHAR_LIMITS["img_path"], "img_path")
                 rows.append({
                     "doc_id": hashlib.md5(img_path.encode("utf-8")).hexdigest(),
                     "text": "",
-                    "source": meta.get("source", ""),
-                    "partition": "__system__",
-                    "chunk_type": meta.get("chunk_type", "") or "image",
+                    "source": self._fit(meta.get("source", ""), self._VARCHAR_LIMITS["source"], "source"),
+                    "partition": self._fit(
+                        meta.get("partition") or "__system__",
+                        self._VARCHAR_LIMITS["partition"], "partition"),
+                    "chunk_type": self._fit(
+                        meta.get("chunk_type", "") or "image",
+                        self._VARCHAR_LIMITS["chunk_type"], "chunk_type"),
                     "page": meta.get("page") or 0,
                     "img_path": img_path,
-                    "caption": meta.get("caption", "") or "",
-                    "footnote": meta.get("footnote", "") or "",
+                    "caption": self._fit(meta.get("caption", "") or "", self._VARCHAR_LIMITS["caption"], "caption"),
+                    "footnote": self._fit(
+                        meta.get("footnote", "") or "", self._VARCHAR_LIMITS["footnote"], "footnote"),
                     "parent_id": "",
-                    "timestamp": meta.get("timestamp", now),
+                    "timestamp": self._fit(
+                        meta.get("timestamp") or now, self._VARCHAR_LIMITS["timestamp"], "timestamp"),
                     "vector": vec,
                 })
             else:
@@ -254,23 +297,46 @@ class MilvusVectorStore:
                         pass
                 rows.append({
                     "doc_id": text_hash,
-                    "text": d.page_content,
-                    "source": meta.get("source", ""),
-                    "partition": "__system__",
+                    "text": self._fit(d.page_content, self._VARCHAR_LIMITS["text"], "text"),
+                    "source": self._fit(meta.get("source", ""), self._VARCHAR_LIMITS["source"], "source"),
+                    "partition": self._fit(
+                        meta.get("partition") or "__system__",
+                        self._VARCHAR_LIMITS["partition"], "partition"),
                     "chunk_type": "text",
                     "page": meta.get("page") or 0,
                     "img_path": "",
                     "caption": "",
-                    "footnote": meta.get("footnote", "") or "",
-                    "parent_id": parent_id,
-                    "timestamp": meta.get("timestamp", now),
+                    "footnote": self._fit(
+                        meta.get("footnote", "") or "", self._VARCHAR_LIMITS["footnote"], "footnote"),
+                    "parent_id": self._fit(parent_id, self._VARCHAR_LIMITS["parent_id"], "parent_id"),
+                    "timestamp": self._fit(
+                        meta.get("timestamp") or now, self._VARCHAR_LIMITS["timestamp"], "timestamp"),
                     "vector": vec_text[ti].tolist(),
                 })
                 ti += 1
 
         if rows:
+            self._insert_rows(rows)
+
+    def _insert_rows(self, rows: list[dict]) -> None:
+        """写入向量行；整批失败时自动二分重试，定位并丢弃个别坏行。
+
+        Milvus 对某一行���验失败会拒绝**整批** insert（code=1100等），
+        直接抛出会导致整篇文档零切块入库。这里逐层拆分，把问题缩小到单行后跳过，
+        保证「个别块超限/非法」不会拖垮整份文档。
+        """
+        try:
             self._client.insert(self._name, rows)
             self._client.flush(self._name)
+            return
+        except Exception as e:  # noqa: BLE001
+            if len(rows) == 1:
+                logger.warning(f"跳过 1 条无法入库的向量行（{type(e).__name__}: {str(e)[:160]}）")
+                return
+            logger.warning(f"批量入库失败（{len(rows)} 行），二分重试定位问题行：{str(e)[:160]}")
+            mid = len(rows) // 2
+            self._insert_rows(rows[:mid])
+            self._insert_rows(rows[mid:])
 
     def _embed_image(self, data: bytes) -> list[float]:
         """图片嵌入向量（与文本同空间，COSINE 前再归一化一次）。"""
@@ -299,14 +365,33 @@ class MilvusVectorStore:
             return []
         return sorted(sources)
 
+    def get_partitions(self) -> list[str]:
+        """获取所有不重复的分区名（知识库列表）。"""
+        partitions: set[str] = set()
+        try:
+            rows = self._client.query(
+                self._name, filter="partition != ''",
+                output_fields=["partition"], limit=_QUERY_MAX_WINDOW,
+            )
+            for r in rows or []:
+                if r.get("partition"):
+                    partitions.add(r["partition"])
+        except Exception:  # noqa: BLE001
+            return []
+        return sorted(partitions)
+
     def delete_all(self) -> None:
         self._client.delete(self._name, filter='doc_id != ""')
         self._client.flush(self._name)
 
-    def delete_by_sources(self, sources: list[str]) -> None:
+    def delete_by_sources(self, sources: list[str], partition: str | None = None) -> None:
+        """按来源名删除切块；``partition`` 非空时只删该知识库下的同名文档。"""
         if not sources:
             return
-        self._client.delete(self._name, filter=f'source in {sources!r}')
+        conds = [f'source in {sources!r}']
+        if partition:
+            conds.append(f'partition == "{_esc(partition)}"')
+        self._client.delete(self._name, filter=" and ".join(conds))
         self._client.flush(self._name)
 
     def delete_by_doc_ids(self, doc_ids: list[str]) -> None:
@@ -362,12 +447,16 @@ class MilvusVectorStore:
     def get_documents(self) -> list[str]:
         return self.get_sources()
 
-    def store_documents_from_dir(self, directory) -> None:
+    def store_documents_from_dir(self, directory, partition: str = "__system__") -> None:
         from infra.adapters.pdf.document_loader import process_documents_from_dir
 
         docs = process_documents_from_dir(directory)
         if not docs:
             raise RuntimeError(f"未从 {directory} 解析到任何文档")
+        # 为每个文档设置分区（如果尚未设置）
+        for d in docs:
+            if "partition" not in (d.metadata or {}):
+                d.metadata["partition"] = partition
         self.add_documents(docs)
 
     # ── 检索 ──
@@ -378,6 +467,7 @@ class MilvusVectorStore:
         top_k: int = 10,
         *,
         source_filter: str | None = None,
+        partition_filter: str | None = None,
         chunk_filter: str = "mixed",
     ) -> list[Document]:
         top_k = top_k or self.default_top_k
@@ -388,6 +478,8 @@ class MilvusVectorStore:
         conds = []
         if source_filter:
             conds.append(f'source == "{_esc(source_filter)}"')
+        if partition_filter:
+            conds.append(f'partition == "{_esc(partition_filter)}"')
         if chunk_filter == "text":
             conds.append('chunk_type == "text"')
         elif chunk_filter == "image":
@@ -438,6 +530,7 @@ class MilvusVectorStore:
         top_k: int = 10,
         *,
         source_filter: str | None = None,
+        partition_filter: str | None = None,
         chunk_filter: str = "mixed",
     ) -> list[Document]:
         """按给定向量检索（图搜文 / 任意同空间向量查询）。"""
@@ -445,6 +538,8 @@ class MilvusVectorStore:
         conds = []
         if source_filter:
             conds.append(f'source == "{_esc(source_filter)}"')
+        if partition_filter:
+            conds.append(f'partition == "{_esc(partition_filter)}"')
         if chunk_filter == "text":
             conds.append('chunk_type == "text"')
         elif chunk_filter == "image":

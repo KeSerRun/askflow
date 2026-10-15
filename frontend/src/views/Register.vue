@@ -1,11 +1,16 @@
 <template>
   <div class="auth-page">
+    <div class="auth-bg" aria-hidden="true" />
+
     <n-card class="auth-card" :bordered="false" size="huge">
-      <div class="auth-header">
+      <div class="auth-brand-bar">
         <div class="brand">
           <img :src="logoSvg" :alt="app.alt" class="brand-logo" />
           <span class="brand-name">{{ app.brand }}</span>
         </div>
+      </div>
+
+      <div class="auth-header">
         <n-h2 class="auth-title">创建账号</n-h2>
         <n-text depth="3">注册一个新账号开始使用</n-text>
       </div>

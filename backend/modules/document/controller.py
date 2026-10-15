@@ -203,6 +203,7 @@ def serve_mineru_image(
     doc_stem: str,
     img_name: str,
     token: str = Query(None),
+    partition: str | None = Query(None, description="知识库名；留空自动探测"),
 ):
     """提供 MinerU 解析产出的图片（逐级放宽匹配）。
 
@@ -211,7 +212,7 @@ def serve_mineru_image(
         AppError 404: 图片未找到。
     """
     require_media_auth(request, token)
-    return views.mineru_image(document_service, doc_stem, img_name)
+    return views.mineru_image(document_service, doc_stem, img_name, partition)
 
 
 @router.get("/documents/image/{img_name:path}")
