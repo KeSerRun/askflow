@@ -32,6 +32,8 @@ const statusLabels = {
       read_knowledge_base_document: `${prefix}正在阅读知识库文档…`,
       read_session_document: `${prefix}正在阅读文档全文…`,
       web_search: `${prefix}正在联网搜索…`,
+      create_deliverable: `${prefix}正在生成 PDF 交付物…`,
+      list_deliverable_templates: `${prefix}正在查看交付物模板…`,
     }
     return toolNames[info.tool] || `${prefix}正在调用工具: ${info.tool}…`
   },
@@ -41,7 +43,8 @@ const statusLabels = {
     if (info.tool === 'read_knowledge_base_document' || info.tool === 'read_session_document') {
       return '✅ 文档阅读完成'
     }
-    if (info.tool === 'ask_user_for_clarification') return '❓ 需要向您提问'
+    if (info.tool === 'ask_user_for_clarification') return '需要你的确认'
+    if (info.tool === 'create_deliverable') return '✅ 交付物已生成'
     return ''
   },
 }
@@ -265,14 +268,21 @@ export const useChatStore = defineStore('chat', () => {
       const response = await axios.get(`/api/history/${sid}`)
       if (response.status === 200) {
         const newMessages = []
+        // 交付物事件写在「本轮回答」中间（工具执行时落库，回答在回合结束才落库）→
+        // 先挂起，等整轮结束（出现下一轮的 user，或历史结束）再追加，
+        // 这样与生成时"卡片在回答下方"的即时位置一致。
+        const pendingDeliverables = []
+        const flushDeliverables = () => {
+          while (pendingDeliverables.length) newMessages.push(pendingDeliverables.shift())
+        }
         for (const msg of response.data.history || []) {
           if (msg.type === 'event') {
             if (msg.event_type === 'deliverable') {
               const files = msg.files || []
               if (files[0]) {
-                newMessages.push({
+                pendingDeliverables.push({
                   role: 'deliverable', id: files[0], title: files[1] || '交付物',
-                  name: `${files[1] || '交付物'}.pdf`, size: 0, _key: nextKey(),
+                  name: `${files[1] || '交付物'}.pdf`, size: Number(files[2]) || 0, _key: nextKey(),
                 })
               }
               continue
@@ -282,13 +292,16 @@ export const useChatStore = defineStore('chat', () => {
             continue
           }
           if (msg.type === 'turn') {
+            let turnStarted = false
             for (const m of msg.messages || []) {
               if (m.role === 'user') {
+                turnStarted = true
                 newMessages.push({ ...cleanUserMessage(m.content), _key: nextKey() })
               } else if (m.role === 'assistant' && !m.tool_calls) {
                 newMessages.push({ role: 'ai', content: m.content || '', _key: nextKey() })
               }
             }
+            if (turnStarted) flushDeliverables()   // 新一轮开始 → 上一轮的交付物追加到此
             continue
           }
           if (msg.user == null && msg.assistant == null) continue
@@ -296,6 +309,26 @@ export const useChatStore = defineStore('chat', () => {
             { role: 'user', content: msg.user || '', _key: nextKey() },
             { role: 'ai', content: msg.assistant || '', _key: nextKey() }
           )
+          flushDeliverables()
+        }
+        flushDeliverables()
+
+        // 老记录的事件里没存字节数 → 用交付物接口回填（顺带校正标题 / 文件名）
+        const unknownSize = newMessages.filter((m) => m.role === 'deliverable' && !m.size)
+        if (unknownSize.length) {
+          try {
+            const res = await axios.get('/api/deliverables', { params: { session_id: sid } })
+            const byId = new Map((res.data?.deliverables || []).map((d) => [d.id, d]))
+            for (const m of unknownSize) {
+              const d = byId.get(m.id)
+              if (!d) continue
+              m.size = Number(d.size) || 0
+              m.name = d.name || m.name
+              m.title = d.title || m.title
+            }
+          } catch (e) {
+            // 拿不到就按"未知大小"渲染（卡片不显示大小，也不显示 0）
+          }
         }
         st.messages = newMessages
       } else {

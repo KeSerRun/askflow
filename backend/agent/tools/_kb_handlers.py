@@ -257,8 +257,8 @@ def _exec_list_knowledge_base_files(
     用于查看知识库有哪些文档并取得精确文件名；会话附件请用 list_session_resources。
     """
     ctx = current_tool_ctx()
-    if not ctx.vector_store:
-        return "(知识库不可用)"
+    if not ctx.vector_store or not getattr(ctx.vector_store, "is_available", lambda: True)():
+        return "(知识库不可用：向量库连接失败)"
     pattern = (pattern or "").strip().lower()
     logger.debug(f"tool list_knowledge_base_files pattern={pattern!r} sort={sort_by}")
 
@@ -311,8 +311,8 @@ def _exec_read_chunk_context(
     if not chunk_id:
         return "(未提供 chunk_id 参数)"
 
-    if not ctx.vector_store:
-        return "(知识库不可用)"
+    if not ctx.vector_store or not getattr(ctx.vector_store, "is_available", lambda: True)():
+        return "(知识库不可用：向量库连接失败)"
 
     meta_list = getattr(ctx.vector_store, "metadata", None)
     if not meta_list:
@@ -395,8 +395,8 @@ def _exec_search_document_content(
 
     logger.debug(f"tool search_document_content keyword={keyword!r} source={source_filter!r}")
 
-    if not ctx.vector_store:
-        return "(知识库不可用)"
+    if not ctx.vector_store or not getattr(ctx.vector_store, "is_available", lambda: True)():
+        return "(知识库不可用：向量库连接失败)"
 
     try:
         system_docs = ctx.vector_store.get_documents() or []

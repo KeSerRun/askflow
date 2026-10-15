@@ -128,19 +128,15 @@ def build_container(cfg: AppConfig) -> Container:
         logger.warning(f"父块内容存储初始化失败，父块功能禁用: {e}")
         chunk_parent_store = None
 
-    try:
-        vector_store = CachedVectorStore(MilvusVectorStore(
-            embedder=embedder,
-            uri=cfg.vector_milvus_uri,
-            token=cfg.vector_milvus_token,
-            collection_name=cfg.vector_milvus_collection,
-            default_top_k=cfg.retrieval_top_k,
-            parent_store=(chunk_parent_store.save_parent if chunk_parent_store else None),
-        ), cache)
-    except Exception as e:  # noqa: BLE001
-        from infra.util.logger import logger
-        logger.warning(f"Milvus 连接失败，向量库不可用: {e}")
-        vector_store = None
+    # ── 向量库（仅支持 Milvus；懒连接：构造不建连，首次检索/入库时才连） ──
+    vector_store = CachedVectorStore(MilvusVectorStore(
+        embedder=embedder,
+        uri=cfg.vector_milvus_uri,
+        token=cfg.vector_milvus_token,
+        collection_name=cfg.vector_milvus_collection,
+        default_top_k=cfg.retrieval_top_k,
+        parent_store=(chunk_parent_store.save_parent if chunk_parent_store else None),
+    ), cache)
 
     # ── 对象存储（仅支持 MinIO；连接失败降级 None） ──
     try:
@@ -153,8 +149,22 @@ def build_container(cfg: AppConfig) -> Container:
         )
     except Exception as e:  # noqa: BLE001
         from infra.util.logger import logger
-        logger.warning(f"MinIO 连接失败，对象存储不可用: {e}")
+        logger.warning(
+            f"对象存储不可用（MinIO {cfg.object_minio_endpoint} 初始化失败）→ 已降级："
+            f"附件上传 / 交付物生成不可用。原因: {e}"
+        )
         object_store = None
+
+    # ── 依赖装配一览（一行；连通性按需查 GET /api/health/check） ──
+    from infra.util.logger import logger
+
+    logger.info(
+        "依赖装配："
+        f"数据库={cfg.storage_backend}(已连接并建表) | 缓存={cfg.cache_backend} | "
+        f"向量库=Milvus {cfg.vector_milvus_uri} | 对象存储=MinIO {cfg.object_minio_endpoint} | "
+        f"嵌入={cfg.embed_base_url} | 对话={cfg.llm_base_url} | "
+        "除数据库/缓存外均为懒连接（首次使用时连接）；连通性见 GET /api/health/check"
+    )
 
     # ── 交付物（模板 + HTML→PDF 渲染 + 生成） ──
     deliverable_service = DeliverableService(

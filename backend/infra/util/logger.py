@@ -8,6 +8,7 @@ import logging
 import logging.handlers
 import os
 import re
+import sys
 
 from config import conf
 
@@ -27,6 +28,46 @@ _COLORS = {
 # ── 日志格式（实现常量，非用户配置） ──
 _LOG_FILE_FORMAT = "%(asctime)s | %(levelname)-5s | %(module)s:%(lineno)d | %(message)s"
 _LOG_CONSOLE_FORMAT = "%(levelname)-5s %(module)s:%(lineno)d | %(message)s"
+
+
+class _QuietHandlerErrors:
+    """日志自身的写失败不要刷屏。
+
+    stdlib 在 handler ``emit`` 抛错时会打印 ``--- Logging error ---`` + 整段 traceback
+    （其中含 ``Message:`` / ``Arguments:`` 两行），在服务进程里既难读又容易被误当成业务错误。
+    这里换成一行的简短提示：保留"写日志失败了"的可见性，又不污染控制台。
+    """
+
+    # 同一位置只提示一次，避免退出阶段刷屏
+    _seen: set = set()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """流已关闭（进程退出 / 重启交接）时静默跳过——这是良性场景，不该产生噪音。"""
+        stream = getattr(self, "stream", None)
+        if stream is None or getattr(stream, "closed", False):
+            return
+        super().emit(record)
+
+    def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802  # 覆盖 stdlib 同名方法
+        key = f"{record.module}:{record.lineno}"
+        if key in _QuietHandlerErrors._seen:
+            return
+        _QuietHandlerErrors._seen.add(key)
+        try:
+            exc = sys.exc_info()[1]
+            sys.stderr.write(
+                f"[logger] 日志写入失败（{key} 该条已忽略）: {type(exc).__name__}: {exc}\n"
+            )
+        except Exception:  # noqa: BLE001  # 连提示都写不出去（控制台已失效）就彻底放弃
+            pass
+
+
+class QuietRotatingFileHandler(_QuietHandlerErrors, logging.handlers.RotatingFileHandler):
+    """带轮转的文件 Handler（写失败只提示一行）。"""
+
+
+class QuietStreamHandler(_QuietHandlerErrors, logging.StreamHandler):
+    """控制台 Handler（写失败只提示一行）。"""
 
 
 class ColorFormatter(logging.Formatter):
@@ -78,7 +119,7 @@ def _rotating_handler(
         RotatingFileHandler 实例。
     """
     path = os.path.join(conf.log_path, filename)
-    h = logging.handlers.RotatingFileHandler(
+    h = QuietRotatingFileHandler(
         path, encoding="utf-8",
         maxBytes=max_mb * 1024 * 1024, backupCount=backup_count,
     )
@@ -104,6 +145,8 @@ _http_level = conf.log_http_level or "INFO"
 # ── 应用日志器 ────────────────────────────────────
 logger = logging.getLogger("APPLogger")
 logger.setLevel(logging.DEBUG)
+# 自带 handler，不再向 root 传播（避免被 root / logging.lastResort 二次输出到 stderr）
+logger.propagate = False
 
 # 文件 handler：带滚动窗口
 _fh = _rotating_handler(
@@ -112,7 +155,7 @@ _fh = _rotating_handler(
     conf.log_max_mb, conf.log_backup_count,
 )
 # 控制台 handler：带颜色
-_ch = logging.StreamHandler()
+_ch = QuietStreamHandler()
 _ch.setLevel(_console_level)
 _ch.setFormatter(ColorFormatter(_LOG_CONSOLE_FORMAT))
 

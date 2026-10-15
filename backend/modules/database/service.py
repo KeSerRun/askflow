@@ -55,8 +55,8 @@ class DatabaseService:
     def stats(self) -> dict:
         """向量库统计：切块/向量总数、按来源分布、类型、嵌入信息（默认只使用 __system__ 分区）。"""
         vs = self._vector
-        if vs is None:
-            return {"available": False, "message": "向量存储未初始化"}
+        if vs is None or not getattr(vs, "is_available", lambda: True)():
+            return {"available": False, "message": "向量存储未初始化或连接失败"}
 
         metadata = vs.metadata or []
         vectors = getattr(vs, "dense_vectors", []) or []
@@ -223,8 +223,8 @@ class DatabaseService:
         stem = Path(name).stem
 
         vs = self._vector
-        if vs is None:
-            return {"available": False, "reason": "向量存储未初始化"}
+        if vs is None or not getattr(vs, "is_available", lambda: True)():
+            return {"available": False, "reason": "向量存储未初始化或连接失败"}
 
         meta_by_page_id: dict[tuple[int, str], dict] = {}
         for m in (vs.metadata or []):

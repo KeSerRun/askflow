@@ -227,14 +227,14 @@ const selectSession = (id) => {
   padding: 8px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 
 .session-item {
   display: flex;
   align-items: center;
-  padding: 10px 12px;
-  border-radius: 8px;
+  padding: 9px 12px;
+  border-radius: 10px;
   cursor: pointer;
   color: var(--color-text-2);
   font-size: 14px;
@@ -251,6 +251,7 @@ const selectSession = (id) => {
   background-color: var(--color-primary-bg);
   color: var(--color-primary);
   font-weight: 500;
+  box-shadow: inset 3px 0 0 var(--color-primary);   /* 左侧强调条：一眼看出当前会话 */
 }
 
 .session-icon {

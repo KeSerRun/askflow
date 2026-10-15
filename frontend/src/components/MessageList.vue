@@ -45,7 +45,7 @@
         <n-icon :size="26" :component="DocumentTextOutline" class="deliverable-icon" />
         <div class="deliverable-info">
           <div class="deliverable-title">{{ msg.title }}</div>
-          <div class="deliverable-meta">PDF · {{ fmtSize(msg.size) }}</div>
+          <div class="deliverable-meta">PDF{{ msg.size ? ' · ' + fmtSize(msg.size) : '' }}</div>
         </div>
         <n-button size="small" type="primary" secondary @click="onDownloadDeliverable(msg)">
           <template #icon>
@@ -108,8 +108,8 @@
       </div>
     </div>
 
-    <!-- 思考中：等待后端首段响应 -->
-    <div v-if="isLoading && (!messages.length || messages[messages.length - 1]?.role !== 'ai')" class="message ai">
+    <!-- 思考中：等待后端首段响应（用"对话类最后一条"判断，避免交付物卡片插在末尾时误判） -->
+    <div v-if="isLoading && !lastChatIsAi" class="message ai">
       <div class="avatar-wrap">
         <n-avatar
           round
@@ -128,7 +128,7 @@
     </div>
 
     <!-- Agent 操作状态（独立于 thinking 气泡，AI 已经开始回复后仍可显示） -->
-    <div v-if="statusText && isLoading && messages.length && messages[messages.length - 1]?.role === 'ai'" class="agent-status-bar">
+    <div v-if="statusText && isLoading && lastChatIsAi" class="agent-status-bar">
       <div class="status-dot"></div>
       <span class="status-label">{{ statusText }}</span>
     </div>
@@ -170,6 +170,22 @@ const fmtSize = (bytes) => {
 }
 
 const onDownloadDeliverable = (msg) => emit('download-deliverable', msg)
+
+// 最后一条「对话类」消息（跳过交付物卡片 / 系统事件）。
+// 交付物卡片是在回答生成过程中插入的，若直接看列表最后一条，会误判成"还没轮到 AI 回复"：
+// 既会凭空多出一个空的"思考中"气泡，又会让真正的操作状态条不显示。
+const lastChatIndex = computed(() => {
+  for (let i = props.messages.length - 1; i >= 0; i -= 1) {
+    const role = props.messages[i].role
+    if (role === 'deliverable' || role === 'event') continue
+    return i
+  }
+  return -1
+})
+
+const lastChatIsAi = computed(
+  () => lastChatIndex.value >= 0 && props.messages[lastChatIndex.value].role === 'ai',
+)
 
 // 空对话推荐问题（示例；点击即作为消息发给助手）
 const suggestions = [
@@ -237,13 +253,34 @@ defineExpose({ scrollToBottom })
 <style scoped>
 .messages-area {
   flex: 1;
-  padding: 28px 24px 48px;
+  padding: 24px 24px 40px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 22px;
+  gap: 20px;
   scroll-behavior: smooth;
   scrollbar-gutter: stable;
+}
+
+/* 细滚动条：与主题一致，不抢视线 */
+.messages-area::-webkit-scrollbar {
+  width: 10px;
+}
+
+.messages-area::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.messages-area::-webkit-scrollbar-thumb {
+  background-color: var(--color-neutral-wash-inline);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+
+.messages-area::-webkit-scrollbar-thumb:hover {
+  background-color: var(--color-neutral-wash-hover);
+  background-clip: content-box;
 }
 
 .welcome {
@@ -437,24 +474,26 @@ defineExpose({ scrollToBottom })
 
 .bubble {
   padding: 12px 16px;
-  border-radius: 12px;
+  border-radius: 16px;
   font-size: 15px;
-  line-height: 1.65;
+  line-height: 1.7;
+  color: var(--color-text-1);
   word-break: break-word;
   max-width: min(720px, 80%);
 }
 
 .message.user .bubble {
   background-color: var(--color-primary-bg);
-  border-bottom-right-radius: 4px;
+  border: 1px solid var(--color-primary-bg);
+  border-bottom-right-radius: 6px;
   transition: background-color 0.2s ease;
 }
 
 .message.ai .bubble {
   background-color: var(--color-bg-card);
-  border: 1px solid var(--color-border);
-  border-bottom-left-radius: 4px;
-  box-shadow: 0 1px 3px var(--color-shadow-card);
+  border: 1px solid var(--color-border-light);
+  border-bottom-left-radius: 6px;
+  box-shadow: 0 1px 2px var(--color-shadow-card);
 }
 
 .user-content {
@@ -582,11 +621,19 @@ defineExpose({ scrollToBottom })
   line-height: 1.3;
 }
 
+/* 气泡顶部不留大空隙 */
+.ai-content :deep(h1:first-child),
+.ai-content :deep(h2:first-child),
+.ai-content :deep(h3:first-child),
+.ai-content :deep(h4:first-child) {
+  margin-top: 0;
+}
+
 .ai-content :deep(h1) {
-  font-size: 22px;
+  font-size: 20px;
 }
 .ai-content :deep(h2) {
-  font-size: 18px;
+  font-size: 17px;
 }
 .ai-content :deep(h3) {
   font-size: 16px;
@@ -597,6 +644,15 @@ defineExpose({ scrollToBottom })
 
 .ai-content :deep(p) {
   margin: 8px 0;
+}
+
+/* 首/尾不留多余空隙 */
+.ai-content :deep(p:first-child) {
+  margin-top: 0;
+}
+
+.ai-content :deep(p:last-child) {
+  margin-bottom: 0;
 }
 
 .ai-content :deep(img) {
@@ -651,11 +707,13 @@ defineExpose({ scrollToBottom })
 }
 
 .ai-content :deep(table) {
+  display: block;
   width: 100%;
+  max-width: 100%;
   border-collapse: collapse;
   margin: 12px 0;
   font-size: 14px;
-  table-layout: fixed;
+  overflow-x: auto;          /* 宽表格横向滚动，不再把单元格挤成一列 */
 }
 
 .ai-content :deep(th),
@@ -665,12 +723,21 @@ defineExpose({ scrollToBottom })
   text-align: left;
   word-break: break-word;
   overflow-wrap: break-word;
-  max-width: 400px;
 }
 
 .ai-content :deep(th) {
   background-color: var(--color-neutral-wash);
   font-weight: 600;
+}
+
+.ai-content :deep(tr:nth-child(even) td) {
+  background-color: var(--color-neutral-wash-light);
+}
+
+/* 公式/长内容横向滚动，避免撑破气泡 */
+.ai-content :deep(.katex-scroll-wrap) {
+  margin: 8px 0;
+  overflow-x: auto;
 }
 
 .ai-content :deep(a) {

@@ -112,24 +112,43 @@
     />
 
     <!-- 澄清选择框：模型 ask_user_for_clarification（含自定义） -->
-    <n-modal v-model:show="clarifVisible" preset="card" title="❓ 需要确认" style="width: 520px"
-      :mask-closable="!clarifSubmitting">
+    <n-modal
+      v-model:show="clarifVisible"
+      preset="card"
+      style="width: min(520px, calc(100vw - 32px))"
+      :mask-closable="!clarifSubmitting"
+    >
+      <template #header>
+        <div class="clarif-head">
+          <div class="clarif-title">需要确认</div>
+          <div class="clarif-sub">助手在等你确认后继续</div>
+        </div>
+      </template>
+
       <div class="clarif-question">{{ clarification?.question }}</div>
-      <n-radio-group v-if="clarification?.options?.length" v-model:value="clarifChoice" :disabled="clarifSubmitting">
-        <n-space vertical>
+
+      <n-radio-group
+        v-if="clarification?.options?.length"
+        v-model:value="clarifChoice"
+        :disabled="clarifSubmitting"
+        class="clarif-options"
+      >
+        <n-space vertical :size="8">
           <n-radio v-for="(o, i) in clarification.options" :key="i" :value="String(o)">{{ o }}</n-radio>
           <n-radio value="__custom__">自定义…</n-radio>
         </n-space>
       </n-radio-group>
+
       <n-input
         v-model:value="clarifCustom"
         type="textarea"
         :rows="2"
         placeholder="输入你的回答…"
-        style="margin-top: 10px"
+        class="clarif-input"
         :disabled="clarifSubmitting"
         @keydown.enter.prevent="clarifChoice === '__custom__' && submitClarification()"
       />
+
       <template #footer>
         <n-space justify="end">
           <n-button :loading="clarifSubmitting" type="primary" :disabled="!clarifValueReady" @click="submitClarification">
@@ -731,7 +750,11 @@ onUnmounted(() => {
   height: 100vh;
   width: 100%;
   overflow: hidden;
-  background-color: transparent;
+  /* 对话页背景：极淡暖色柔光，避免大面积平色；白底的气泡/顶栏/输入条因此更立体 */
+  background:
+    radial-gradient(1000px 560px at 6% -10%, var(--color-primary-bg-active), transparent 60%),
+    radial-gradient(820px 480px at 108% 108%, var(--color-primary-bg-subtle), transparent 58%),
+    var(--color-bg-body);
 }
 
 .chat-main {
@@ -939,11 +962,63 @@ onUnmounted(() => {
 }
 
 /* 澄清选择框 */
-.clarif-question {
-  font-size: 14px;
+/* 澄清确认弹窗 */
+.clarif-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.clarif-title {
+  font-size: 16px;
+  font-weight: 600;
   color: var(--color-text-1);
-  margin-bottom: 12px;
+}
+
+.clarif-sub {
+  font-size: 12px;
+  color: var(--color-text-3);
+}
+
+.clarif-question {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border-left: 3px solid var(--color-primary);
+  border-radius: 10px;
+  background: var(--color-primary-bg-subtle);
+  font-size: 14px;
+  line-height: 1.65;
+  color: var(--color-text-1);
   white-space: pre-wrap;
+}
+
+/* 选项做成可点卡片：比裸 radio 更好点、更好看 */
+.clarif-options :deep(.n-radio) {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border-light);
+  border-radius: 10px;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.clarif-options :deep(.n-radio:hover) {
+  border-color: var(--color-primary);
+  background: var(--color-primary-bg-subtle);
+}
+
+.clarif-options :deep(.n-radio--checked) {
+  border-color: var(--color-primary);
+  background: var(--color-primary-bg-subtle);
+}
+
+.clarif-options :deep(.n-radio__label) {
+  white-space: normal;
   line-height: 1.6;
+}
+
+.clarif-input {
+  margin-top: 12px;
 }
 </style>

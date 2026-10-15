@@ -42,6 +42,30 @@ from .tools import registry
 from .tools._common import _get_goal_line, _get_todolist, _todo_line
 from .tools.registry import ToolContext
 
+# ── LLM 调用异常 → 可操作提示 ──
+
+
+def _llm_error_hint(exc: Exception) -> str:
+    """把 LLM 调用异常映射成一句可操作的提示（网络 / 鉴权 / 限流 / 超时 / 服务端）。"""
+    low = f"{type(exc).__name__} {exc}".lower()
+    if "authenticationerror" in low or "invalid api key" in low or "401" in low:
+        return "模型服务鉴权失败（API Key 可能无效或已过期），请检查配置后重试。"
+    if "ratelimit" in low or "429" in low:
+        return "模型服务限流（请求过于频繁），请稍后重试。"
+    if "timeout" in low or "timed out" in low:
+        return "请求模型服务超时，请稍后重试。"
+    if "connect" in low or "ssl" in low or "network" in low or "unreachable" in low:
+        return "网络连接模型服务失败（连接被中断或 TLS 握手失败），请稍后重试，或检查网络 / 代理设置。"
+    if "apistatuserror" in low or "internal server" in low:
+        return "模型服务暂时不可用，请稍后重试。"
+    return "模型服务调用失败，请稍后重试。"
+
+
+def _llm_error_message(exc: Exception) -> str:
+    """统一的用户可见错误文案（会被落库，刷新后仍能看到）。"""
+    return f"\n\n抱歉，模型处理请求时发生了错误。\n\n**原因**：{_llm_error_hint(exc)}"
+
+
 # ── 工具调用展示解析（前端 status 事件） ──
 
 
@@ -302,6 +326,35 @@ class ToolLoop:
         updates["next_action"] = "finish"
         return updates
 
+    def _finish_error(self, state: dict, message: str, emit=None) -> dict:
+        """出错收尾：把这条回答**追加进消息并落库**，再发 finished。
+
+        正常结束由 :meth:`_agent_node` 末尾统一落库；错误路径（LLM 调用失败等）此前只走
+        ``_finish`` —— 回答只发给了前端、没有写进历史，刷新后会整轮消失。
+        """
+        msg = message or "抱歉，模型处理请求时发生了错误。"
+        updates = self._finish(state, msg)
+        updates["messages"] = list(state.get("messages", [])) + [assistant_message(msg)]
+        self._persist_turn(updates)
+        self._checkpoint(updates)
+        try:
+            get_stream_writer()({"type": "status", "status": "finished"})
+        except Exception:  # noqa: BLE001 无 stream writer（非流式）时忽略
+            pass
+        if callable(emit):
+            emit({"type": "status", "status": "finished"})
+        return updates
+
+    def _persist_error_message(self, session_id: str, message: str) -> None:
+        """图整体崩溃时的兜底：把出错回答单独落成一条回合记录。"""
+        ds = self.data_store
+        if ds is None or not message:
+            return
+        try:
+            ds.insert_session_turn(session_id, [assistant_message(message)])
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"错误回答落库失败: {e}")
+
     def _persist_turn(self, state: dict) -> None:
         """把本轮新增消息增量存入历史（与旧 _save_turn_messages 等价）。"""
         ds = self.data_store
@@ -386,13 +439,13 @@ class ToolLoop:
                 resp = self._chat_response(state, registry.schemas, "auto")
             except Exception as e:
                 logger.error(f"LLM tool 调用失败 (round {state.get('iteration')}): {e}")
-                return self._finish(state, "抱歉，模型处理请求时发生了错误。")
+                return self._finish_error(state, _llm_error_message(e), emit)
             content, tool_calls, reason = resp.content or "", resp.tool_calls or [], resp.finish_reason
 
         if reason == "cancelled":
             return {"next_action": "finish"}
         if reason == "error":
-            return self._finish(state, content or "抱歉，模型处理请求时发生了错误。")
+            return self._finish_error(state, content or "抱歉，模型处理请求时发生了错误。", emit)
 
         updates = dict(state)
         if tool_calls:
@@ -471,7 +524,7 @@ class ToolLoop:
                     reason = ev.reason
         except Exception as e:
             logger.error(f"LLM tool 流式调用失败 (round {state.get('iteration')}): {e}", exc_info=True)
-            msg = "\n\n抱歉，模型处理请求时发生了错误。"
+            msg = _llm_error_message(e)
             writer({"type": "token", "text": msg})
             if emit:
                 emit({"type": "token", "text": msg})
@@ -653,7 +706,9 @@ class ToolLoop:
             final = self.graph.invoke(state, config=config)
         except Exception as e:
             logger.error(f"Agent 图执行失败: {e}", exc_info=True)
-            return "抱歉，模型处理请求时发生了错误。"
+            msg = _llm_error_message(e)
+            self._persist_error_message(state.get("session_id") or "default", msg)
+            return msg
 
         ans = final.get("final_answer") or final.get("clarification") or ""
         if not ans:
@@ -686,7 +741,9 @@ class ToolLoop:
                         yield ev
             except Exception as e:
                 logger.error(f"Agent 流式执行失败: {e}", exc_info=True)
-                yield {"type": "token", "text": "\n\n抱歉，模型处理请求时发生了错误。"}
+                msg = _llm_error_message(e)
+                self._persist_error_message(thread_id, msg)   # 兜底落库：刷新后回答不消失
+                yield {"type": "token", "text": msg}
             finally:
                 if reached_end and self.checkpoint_store is not None:
                     self._clear_checkpoint({"session_id": thread_id})

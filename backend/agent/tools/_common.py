@@ -465,7 +465,7 @@ def _hybrid_retrieve(
         按 RRF 分数降序排列的 Document 列表（含 source/chunk_type/img_path）。
     """
     vs = getattr(ctx, "vector_store", None)
-    if vs is None:
+    if vs is None or not getattr(vs, "is_available", lambda: True)():
         return []
     k = int(retrieval_top_k or 50)
     all_ranked: list[tuple[int, int, Document]] = []

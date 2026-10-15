@@ -196,8 +196,9 @@ const handleUpload = ({ file, onFinish, onError }) => {
 
 <style scoped>
 .input-area {
-  padding: 14px 24px 18px;
+  padding: 12px 24px 14px;
   background-color: var(--color-bg-card);
+  border-top: 1px solid var(--color-border-light);   /* 与消息区划清界限 */
   flex-shrink: 0;
 }
 
@@ -211,9 +212,9 @@ const handleUpload = ({ file, onFinish, onError }) => {
   box-sizing: border-box;
   padding: 10px 12px;
   border: 1px solid var(--color-border);
-  border-radius: 20px;
+  border-radius: 18px;
   background-color: var(--color-bg-white);
-  box-shadow: 0 2px 8px var(--color-shadow-card);
+  box-shadow: 0 1px 4px var(--color-shadow-card);
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
@@ -244,7 +245,7 @@ const handleUpload = ({ file, onFinish, onError }) => {
 
 .hint {
   text-align: center;
-  margin-top: 10px;
+  margin-top: 8px;
 }
 
 /* 粘贴图片预览 */

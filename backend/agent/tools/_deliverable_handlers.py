@@ -73,10 +73,12 @@ def _exec_create_deliverable(
 
     meta = svc.create(user_id=user_id, session_id=session_id, template=template, title=title, content=content or {})
 
-    # 落一条历史事件（重开会话后仍能看到、且可下载）
+    # 落一条历史事件（重开会话后仍能看到、且可下载）：[id, 标题, 字节数]
     try:
         if ctx.data_store is not None:
-            ctx.data_store.insert_session_event(session_id, "deliverable", [meta["id"], meta["title"]])
+            ctx.data_store.insert_session_event(
+                session_id, "deliverable", [meta["id"], meta["title"], int(meta["size"] or 0)],
+            )
     except Exception as e:  # noqa: BLE001
         logger.warning(f"交付物历史事件写入失败: {e}")
 

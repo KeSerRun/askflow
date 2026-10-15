@@ -1,9 +1,14 @@
 """adapters.vector.milvus —— Milvus 向量库（ports.VectorStore 实现，MilvusClient API）。
 
 相似度使用 COSINE；元数据带来源字段，检索支持来源过滤 + 去重。
+
+**懒连接**：构造时不建连（与对话 / 嵌入 / 对象存储一致）——首次真正用到（检索 / 入库 /
+统计等）才建连并完成集合与索引准备；失败不缓存，下次调用自动重试（Milvus 恢复后无需重启）。
 """
 
 from __future__ import annotations
+
+import threading
 
 import numpy as np
 
@@ -35,16 +40,54 @@ class MilvusVectorStore:
             collection_name: 向量集合名。
             default_top_k: search 默认值。
             parent_store: 父块内容存储（save_parent(parent_id, text)）；None 则不持久化父块全文。
-        """
-        from pymilvus import MilvusClient
 
-        self._client = MilvusClient(uri=uri, token=token or None)
+        Note:
+            构造**不建连**（懒连接）；首次访问 ``_client`` 时才建连并准备集合。
+        """
+        self._uri = uri
+        self._token = token or None
         self._embedder = embedder
         self.dimension = embedder.dimension
         self.default_top_k = default_top_k
         self._name = collection_name
         self.parent_store = parent_store
-        self._ensure_collection()
+        self._client_cached = None
+        self._client_lock = threading.Lock()
+
+    @property
+    def _client(self):
+        """Milvus 客户端（懒连接：首次使用才建连 + 准备集合）。
+
+        - 构造阶段不发任何请求，装配与启动不因 Milvus 未起而报错（与其它外部服务一致）；
+        - 建连 + 集合/索引准备失败时抛异常，且**不缓存失败**：下次调用会重试，
+          Milvus 恢复后无需重启后端即可自动可用；
+        - 用锁保证并发首次调用只建连一次。
+        """
+        if self._client_cached is not None:
+            return self._client_cached
+        with self._client_lock:
+            if self._client_cached is None:
+                from pymilvus import MilvusClient
+
+                self._client_cached = MilvusClient(uri=self._uri, token=self._token)
+                try:
+                    self._ensure_collection()
+                except Exception:
+                    self._client_cached = None  # 不缓存失败：下次重试
+                    raise
+        return self._client_cached
+
+    def is_available(self) -> bool:
+        """当前能否连上向量库（需要"可用性判断"的调用点用它，而非判断对象是否为 None）。
+
+        连接失败返回 False（不抛异常、也不缓存失败），下次调用会重新尝试 ——
+        因此 Milvus 恢复后无需重启后端即可自动可用。
+        """
+        try:
+            self._client
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
     # ── 集合管理 ──
 

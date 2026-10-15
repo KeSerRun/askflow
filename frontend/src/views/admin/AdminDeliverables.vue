@@ -1,7 +1,7 @@
 <template>
   <div class="deliverables-page">
     <n-h2>交付物模板</n-h2>
-    <n-text depth="3" style="display:block; margin-bottom: 16px">
+    <n-text depth="3" class="page-hint">
       维护 HTML 模板（Jinja2）—— 模型调用 create_deliverable 时用所选模板 + 内容渲染成 PDF 交付物。
       文本字段加 <code>| md</code> 过滤器即可渲染 <b>Markdown</b>（标题 / 列表 / 加粗 / 表格）；可用样例内容预览。
     </n-text>
@@ -90,13 +90,23 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
-import { useMessage } from 'naive-ui'
-import { useAdminStore } from '@/stores/admin'
+import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import {
-  NH2, NText, NCard, NButton, NForm, NFormItem, NInput, NSpace, NEmpty, NPopconfirm, NModal,
+  NButton,
+  NCard,
   NColorPicker,
+  NEmpty,
+  NForm,
+  NFormItem,
+  NH2,
+  NInput,
+  NModal,
+  NPopconfirm,
+  NSpace,
+  NText,
+  useMessage,
 } from 'naive-ui'
+import { useAdminStore } from '@/stores/admin'
 
 const store = useAdminStore()
 const message = useMessage()
@@ -237,6 +247,10 @@ async function resetBuiltins() {
   }
 }
 
+onUnmounted(() => {
+  if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
+})
+
 onMounted(async () => {
   await loadList()
   if (templates.value.length) openTemplate(templates.value[0].name)
@@ -245,6 +259,7 @@ onMounted(async () => {
 
 <style scoped>
 .deliverables-page { max-width: 1200px; }
+.page-hint { display: block; margin-bottom: 16px; }
 .layout { display: flex; gap: 16px; align-items: flex-start; }
 .side { width: 240px; flex-shrink: 0; }
 .editor { flex: 1; min-width: 0; }
@@ -253,10 +268,10 @@ onMounted(async () => {
   padding: 8px 10px; border-radius: 8px; cursor: pointer;
   border: 1px solid transparent; transition: all 0.15s ease;
 }
-.tpl-item:hover { background: var(--color-neutral-wash-light, rgba(120,112,104,.03)); }
-.tpl-item.active { border-color: var(--color-primary, #d4734e); background: var(--color-primary-bg, rgba(212,115,78,.12)); }
-.tpl-label { font-size: 13px; font-weight: 600; color: var(--color-text-1, #1a1714); }
-.tpl-name { font-size: 11px; color: var(--color-text-3, #6e6760); margin-top: 1px; }
+.tpl-item:hover { background: var(--color-neutral-wash-light); }
+.tpl-item.active { border-color: var(--color-primary); background: var(--color-primary-bg); }
+.tpl-label { font-size: 13px; font-weight: 600; color: var(--color-text-1); }
+.tpl-name { font-size: 11px; color: var(--color-text-3); margin-top: 1px; }
 .code-area :deep(textarea) { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
 .preview-frame { width: 100%; height: 70vh; border: 0; }
 </style>
