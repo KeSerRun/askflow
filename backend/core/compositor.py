@@ -10,7 +10,6 @@
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass, field
 
 from agent import IntegratedSystem
@@ -74,14 +73,13 @@ def build_container(cfg: AppConfig) -> Container:
 
     # ── LLM 对话 / 嵌入 ──
     # 对话/嵌入各自独立的 OpenAI 兼容端点与密钥，直接构造适配器。
-    # opencode Go 端点要求 x-opencode-session 头用于路由（其它端点忽略）。
+    # 端点专属请求头（如 opencode Go 的 x-opencode-session）由 LLM 适配器按 base_url 自动注入。
     chat_model = OpenAIChatModel(
         api_key=cfg.llm_api_key,
         base_url=cfg.llm_base_url,
         model=cfg.llm_model,
         timeout=cfg.llm_timeout,
         max_retries=cfg.llm_max_retries,
-        default_headers={"x-opencode-session": uuid.uuid4().hex},
     )
     embedder = OpenAIEmbedder(
         api_key=cfg.embed_api_key,

@@ -11,6 +11,7 @@ OpenAIEmbedder  : 文本嵌入（自动分批）  → ports.Embedder
 from __future__ import annotations
 
 import os
+import uuid
 from collections.abc import Iterable, Iterator
 
 from openai import OpenAI
@@ -20,6 +21,26 @@ from infra.util.logger import logger
 
 # 思考内容的字段名：DeepSeek-R1 用 ``reasoning_content``，Ollama(Qwen3) 用 ``reasoning``
 _REASONING_FIELDS = ("reasoning_content", "reasoning")
+
+# 端点专属默认头：命中 base_url 标记时注入对应请求头（值自动生成）。
+# 把 provider 细节收敛在适配器内，组合根无需认识各 provider。
+_PROVIDER_HEADERS: tuple[tuple[str, str], ...] = (
+    ("opencode", "x-opencode-session"),   # opencode Go 端点要求会话头用于路由
+)
+
+
+def resolve_default_headers(base_url: str | None) -> dict:
+    """按端点归属推断需附加的默认请求头。
+
+    命中 ``_PROVIDER_HEADERS`` 的标记则返回对应头（会话头取随机 hex），否则返回
+    空 dict。这样端点私货留在适配器内，组合根保持 provider 无关。
+    """
+    host = (base_url or "").lower()
+    return {
+        header: uuid.uuid4().hex
+        for marker, header in _PROVIDER_HEADERS
+        if marker in host
+    }
 
 
 def _delta_field(delta, *names: str) -> str | None:
@@ -57,7 +78,7 @@ class OpenAIChatModel:
             model: 模型名（如 deepseek-v4-flash）。
             timeout: 请求超时秒数。
             max_retries: SDK 失败自动重试次数。
-            default_headers: 附加到所有请求的默认头（如 opencode Go 的 x-opencode-session）。
+            default_headers: 显式默认头；None 时按端点自动推断（见 resolve_default_headers）。
 
         Raises:
             RuntimeError: 未提供 API 密钥时抛出。
@@ -66,12 +87,16 @@ class OpenAIChatModel:
         if not key:
             raise RuntimeError("未设置 LLM_API_KEY，请在 .env 或环境变量中配置")
 
+        headers = (
+            default_headers if default_headers is not None
+            else resolve_default_headers(base_url)
+        )
         self._client = OpenAI(
             api_key=key,
             base_url=base_url or None,
             timeout=timeout,
             max_retries=max_retries,
-            default_headers=default_headers or None,
+            default_headers=headers or None,
         )
         self._model = model
         logger.debug(f"Chat OpenAI 客户端初始化完成，base_url={base_url or 'https://api.openai.com/v1'}")
