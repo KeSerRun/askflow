@@ -77,7 +77,7 @@
         <span
           v-if="contextUsage"
           class="context-usage"
-          :title="`上下文 ${fmtChars(contextUsage.used)} / ${fmtChars(contextUsage.window)} 字符`"
+          :title="`上下文 ${fmtNum(contextUsage.used)} / ${fmtNum(contextUsage.window)} token`"
         >上下文 {{ contextUsage.pct }}%</span>
       </div>
 
@@ -538,7 +538,7 @@ async function submitClarification() {
   chat.resume(currentSessionId.value, answer)
 }
 
-const fmtChars = (n) => (Number(n) || 0).toLocaleString('en-US')
+const fmtNum = (n) => (Number(n) || 0).toLocaleString('en-US')
 
 // ── 图搜文（已并入 search_knowledge_base 通道，粘贴图片随发送上传） ──
 

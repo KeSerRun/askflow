@@ -13,6 +13,7 @@ from .checkpoint import CheckpointStore
 from .context import SystemContext
 from .governor import compress_history, truncate_history
 from .loop import ToolLoop
+from .tokens import estimate_messages_tokens
 
 # ── 集成系统 ──
 
@@ -193,8 +194,8 @@ class IntegratedSystem:
 
         # ── 上下文预算检查：超限时压缩历史中的工具结果 ──
         _cfg = getattr(self.tool_loop, "cfg", None)
-        budget = int(_cfg.context_window_chars * _cfg.context_input_ratio)
-        total = sum(len(str(m.get("content", "") or "")) for m in messages)
+        budget = int(_cfg.context_window_tokens * _cfg.context_input_ratio)
+        total = estimate_messages_tokens(messages)
         if total > budget and len(raw) > 2:
             # 因为只压缩工具结果，所以需要压缩比 0.5 倍
             compress_history(self.data_store, session_id, raw,
@@ -205,7 +206,7 @@ class IntegratedSystem:
                 self._append_history_item(messages, h)
 
         # ── 第二关：压缩后仍超预算 → 截断历史 ──
-        total = sum(len(str(m.get("content", "") or "")) for m in messages)
+        total = estimate_messages_tokens(messages)
         if total > budget and len(raw) > 2:
             # 这里保留压缩比，确保达标
             target = int(budget * _cfg.context_compression_ratio)
@@ -216,8 +217,8 @@ class IntegratedSystem:
             for h in raw:
                 self._append_history_item(messages, h)
 
-        total_chars = sum(len(str(m.get('content', '') or '')) for m in messages)
-        logger.debug(f"get_history: raw={len(raw)} 条, 总字符 ~{total_chars}, "
+        total_tokens = estimate_messages_tokens(messages)
+        logger.debug(f"get_history: raw={len(raw)} 条, 总 token ~{total_tokens}, "
                      f"返回 {len(messages)} 条消息")
 
         return messages

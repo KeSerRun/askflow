@@ -68,8 +68,8 @@ class FakeDataStore:
 def _cfg(max_iter=5):
     return SimpleNamespace(
         agent_max_tool_iter=max_iter,
-        agent_max_output_chars=2048,
-        context_window_chars=200000,
+        agent_max_output_tokens=2048,
+        context_window_tokens=200000,
         llm_model="fake-model",
         llm_reasoning_effort=None,
         storage_data_dir="",
@@ -152,9 +152,9 @@ class AgentGraphTest(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
     def test_running_compression_frees_budget(self):
-        # 超字符预算：运行中压缩旧工具结果后达标，避免提前熔断
+        # 超 token 预算：运行中压缩旧工具结果后达标，避免提前熔断
         loop = _loop(_SCRIPT, max_iter=5)
-        long = "a" * 1000
+        long = "a" * 4000  # 约 1000 token/条
         state = {
             "messages": [
                 {"role": "tool", "tool_call_id": str(i), "content": long}
@@ -162,7 +162,7 @@ class AgentGraphTest(unittest.TestCase):
             ],
             "iteration": 1,
             "max_iterations": 5,
-            "context_window_chars": 5000,
+            "context_window_tokens": 5000,
         }
         self.assertFalse(budget_ok(state))
         self.assertTrue(loop._try_compress_context(state))
@@ -175,7 +175,7 @@ class AgentGraphTest(unittest.TestCase):
             "messages": [{"role": "tool", "tool_call_id": "1", "content": "a" * 1000}],
             "iteration": 1,
             "max_iterations": 1,
-            "context_window_chars": 10,
+            "context_window_tokens": 10,
         }
         self.assertFalse(loop._try_compress_context(state))
 

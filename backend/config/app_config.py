@@ -65,7 +65,7 @@ class AppConfig:
     embed_health_url: str | None
 
     # ── 治理 ──
-    context_window_chars: int
+    context_window_tokens: int
     context_input_ratio: float
     context_compression_ratio: float
     context_tool_page_chars: int
@@ -76,7 +76,7 @@ class AppConfig:
 
     # ── Agent ──
     agent_max_tool_iter: int
-    agent_max_output_chars: int
+    agent_max_output_tokens: int
     agent_checkpoint_enabled: bool
 
     # ── 并发调优 ──

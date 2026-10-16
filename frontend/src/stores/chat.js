@@ -209,8 +209,8 @@ export const useChatStore = defineStore('chat', () => {
       return
     }
     if (content.type === 'context') {
-      const used = Number(content.used_chars) || 0
-      const win = Number(content.window_chars) || 0
+      const used = Number(content.used_tokens) || 0
+      const win = Number(content.window_tokens) || 0
       st.contextUsage = { used, window: win, pct: win ? Math.round((used / win) * 100) : 0 }
     }
   }

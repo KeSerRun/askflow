@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import TypedDict
 
+from .tokens import estimate_messages_tokens
+
 
 class GraphState(TypedDict, total=False):
     """LangGraph 共享状态。"""
@@ -15,7 +17,7 @@ class GraphState(TypedDict, total=False):
     messages: list[dict]
     iteration: int
     max_iterations: int
-    context_window_chars: int
+    context_window_tokens: int
     session_id: str
     partition: str | None
     style: str | None
@@ -37,13 +39,9 @@ class GraphState(TypedDict, total=False):
     saved_idx: int
 
 
-def total_message_chars(state: dict) -> int:
-    """统计 messages 总字符（不含 system 消息）。"""
-    return sum(
-        len(str(m.get("content", "") or ""))
-        for m in state.get("messages", [])
-        if m.get("role") != "system"
-    )
+def total_message_tokens(state: dict) -> int:
+    """估算 messages 总 token（不含 system 消息）。"""
+    return estimate_messages_tokens(state.get("messages", []))
 
 
 def budget_ok(state: dict) -> bool:
@@ -51,8 +49,8 @@ def budget_ok(state: dict) -> bool:
     max_iter = state.get("max_iterations") or 15
     if (state.get("iteration") or 0) >= max_iter:
         return False
-    window = state.get("context_window_chars") or 40000
-    return total_message_chars(state) <= window
+    window = state.get("context_window_tokens") or 128000
+    return total_message_tokens(state) <= window
 
 
 def assistant_message(content: str, tool_calls: list[dict] | None = None) -> dict:

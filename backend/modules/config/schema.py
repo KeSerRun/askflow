@@ -79,10 +79,10 @@ LABEL_MAP: dict[str, str] = {
     "REDIS_URL": "Redis 连接地址",
     # AGENT
     "AGENT_MAX_TOOL_ITER": "工具调用最大迭代次数",
-    "AGENT_MAX_OUTPUT_CHARS": "单次输出最大字符数",
+    "AGENT_MAX_OUTPUT_TOKENS": "单次输出最大 token 数",
     "AGENT_CHECKPOINT_ENABLED": "启用 Agent 检查点",
     # CONTEXT
-    "CONTEXT_WINDOW_CHARS": "上下文窗口字符数",
+    "CONTEXT_WINDOW_TOKENS": "上下文窗口 token 数",
     "CONTEXT_INPUT_RATIO": "输入占比",
     "CONTEXT_COMPRESSION_RATIO": "压缩比例",
     "CONTEXT_TOOL_PAGE_CHARS": "工具分页读取字符数",

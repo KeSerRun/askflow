@@ -47,8 +47,8 @@ def _exec_my(
         lines = ["=== 当前状态 ==="]
         lines.append(f"模型: {_cfg(ctx, 'llm_model', '-')}")
         lines.append(f"最大迭代: {_cfg(ctx, 'agent_max_tool_iter', '-')}")
-        lines.append(f"上下文窗口: {_cfg(ctx, 'context_window_chars', '-')} 字符")
-        lines.append(f"输出字符上限: {_cfg(ctx, 'agent_max_output_chars', '-')}")
+        lines.append(f"上下文窗口: {_cfg(ctx, 'context_window_tokens', '-')} token")
+        lines.append(f"输出 token 上限: {_cfg(ctx, 'agent_max_output_tokens', '-')}")
         lines.append(f"检索 Top-K: {_cfg(ctx, 'retrieval_top_k', '-')}")
         lines.append(f"搜索后端: SearXNG ({_cfg(ctx, 'search_searxng_url', '-')})")
         lines.append("")
@@ -65,8 +65,8 @@ def _exec_my(
         key_map = {
             "model": ("llm_model", _cfg(ctx, "llm_model", "-")),
             "max_iterations": ("agent_max_tool_iter", _cfg(ctx, "agent_max_tool_iter", "-")),
-            "context_window": ("context_window_chars", _cfg(ctx, "context_window_chars", "-")),
-            "max_tokens": ("agent_max_output_chars", _cfg(ctx, "agent_max_output_chars", "-")),
+            "context_window": ("context_window_tokens", _cfg(ctx, "context_window_tokens", "-")),
+            "max_tokens": ("agent_max_output_tokens", _cfg(ctx, "agent_max_output_tokens", "-")),
             "retrieval_top_k": ("retrieval_top_k", _cfg(ctx, "retrieval_top_k", "-")),
         }
         if key in key_map:

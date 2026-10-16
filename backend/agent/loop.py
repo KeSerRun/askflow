@@ -37,7 +37,7 @@ from .state import (
     budget_ok,
     last_assistant_content,
     tool_result_message,
-    total_message_chars,
+    total_message_tokens,
 )
 from .tools import registry
 from .tools._common import _get_goal_line, _get_todolist, _todo_line
@@ -110,7 +110,7 @@ class ToolLoop:
 
         Args:
             chat_client: 对话模型适配器（.chat / .chat_stream，返回 ChatResponse / ChatStreamEvent）。
-            cfg: 配置对象（agent_max_tool_iter / context_window_chars 等）。
+            cfg: 配置对象（agent_max_tool_iter / context_window_tokens 等）。
             data_store: 历史数据存储（回合持久化）。
             vector_store: 向量库实例。
             system_context: 系统上下文（身份/风格/工作流）。
@@ -157,11 +157,8 @@ class ToolLoop:
 
     @property
     def _max_output_tokens(self) -> int:
-        """输出上限：优先 max_output_tokens，回退 agent_max_output_chars。"""
-        return getattr(
-            self.cfg, "max_output_tokens",
-            getattr(self.cfg, "agent_max_output_chars", 8192),
-        )
+        """输出上限（token）。"""
+        return getattr(self.cfg, "agent_max_output_tokens", 8192)
 
     @property
     def _temperature(self) -> float:
@@ -431,7 +428,7 @@ class ToolLoop:
                 logger.info(
                     f"tool-loop 运行中压缩上下文后继续 "
                     f"(iter={state.get('iteration')}, "
-                    f"used={total_message_chars(state)})"
+                    f"used={total_message_tokens(state)})"
                 )
             else:
                 logger.warning(f"tool-loop 达到上限/预算 (iter={state.get('iteration')})")
@@ -442,11 +439,11 @@ class ToolLoop:
                 return updates
 
         # 上下文使用情况事件（前端展示 已用/最大窗口）
-        _cw = state.get("context_window_chars") or 40000
+        _cw = state.get("context_window_tokens") or 128000
         _ctx_ev = {
             "type": "context",
-            "used_chars": total_message_chars(state),
-            "window_chars": _cw,
+            "used_tokens": total_message_tokens(state),
+            "window_tokens": _cw,
             "iterations": state.get("iteration") or 0,
             "max_iterations": state.get("max_iterations") or 15,
         }
@@ -689,14 +686,14 @@ class ToolLoop:
         messages.append({"role": "user", "content": query})
 
         max_iter = getattr(self.cfg, "agent_max_tool_iter", 15)
-        cw = getattr(self.cfg, "context_window_chars", None)
+        ct = getattr(self.cfg, "context_window_tokens", None)
 
         mark = len(messages) - 1
         initial: GraphState = {
             "messages": messages,
             "iteration": 0,
             "max_iterations": max_iter,
-            "context_window_chars": cw or 40000,
+            "context_window_tokens": ct or 128000,
             "session_id": session_id,
             "partition": partition,
             "style": style,
@@ -754,11 +751,11 @@ class ToolLoop:
             reached_end = False
             try:
                 # 初始上下文使用事件（含历史回填）
-                _cw0 = state.get("context_window_chars") or 40000
+                _cw0 = state.get("context_window_tokens") or 128000
                 yield {
                     "type": "context",
-                    "used_chars": total_message_chars(state),
-                    "window_chars": _cw0,
+                    "used_tokens": total_message_tokens(state),
+                    "window_tokens": _cw0,
                     "iterations": state.get("iteration") or 0,
                     "max_iterations": state.get("max_iterations") or 15,
                 }
