@@ -136,10 +136,11 @@ askflow/
 │   ├── app.py                    #   入口（含启动装配 / 生命周期）
 │   ├── core/                     #   共享内核（models/errors/dto/deps/exceptions/compositor）
 │   ├── modules/                  #   业务模块（每个含 entity/dto/vo/service/controller）
-│   │                             #   auth/user/session/history/document/query/config/dashboard/health/qa
-│   ├── infra/                    #   基础设施（logger/llm_client/health/adapters[通用仓储+各适配器]）
-│   ├── config/                   #   配置层（AppConfig / loader / facade[conf] / admin / env_aliases）
-│   ├── agent/                    #   Agent 引擎（ToolLoop+14 工具）
+│   │                             #   auth/user/session/history/document/database/deliverable/tools
+│   │                             #   /prompt/logger/query/config/dashboard/health/frontend
+│   ├── infra/                    #   基础设施（logger/health/adapters[通用仓储+各适配器]）
+│   ├── config/                   #   配置层（app_config[AppConfig+loader+conf 门面] / paths）
+│   ├── agent/                    #   Agent 引擎（LangGraph ToolLoop + tokens/governor + 20 工具）
 │   ├── template/                 #   模板类资源（提示词 / 交付物模板 / 自定义工具源码）
 │   │   ├── prompts/              #     提示词（identity / style / workflow）
 │   │   ├── deliverable/          #     交付物模板（Jinja2 HTML 的 JSON）
@@ -165,17 +166,18 @@ askflow/
 ```
 用户输入
   │
-  ├─ 历史加载 → 超限自动压缩/截断 (governor)
+  ├─ 历史加载 → 按 token 估算，超预算则压缩工具结果 / 截断旧历史 (governor)
   │
   ├─ 组装 system + history + query
   │
-  ├─ LLM 工具循环 (ToolLoop)
+  ├─ LLM 工具循环 (LangGraph ToolLoop)
   │   ├─ LLM 决定调工具 → 并发执行 → 结果回灌 → 继续
   │   └─ LLM 决定直接回答 → 返回最终答案
   │
-  ├─ should_continue 检查
-  │   ├─ 超迭代上限? → 保存状态, "继续"恢复
-  │   └─ 超上下文窗口? → 中断
+  ├─ 预算检查 budget_ok（迭代次数 + token 窗口）
+  │   ├─ 超 token 窗口? → 运行中压缩旧工具结果后继续
+  │   ├─ 仍超限 / 达迭代上限? → 保留快照，"继续"恢复
+  │   └─ 正常结束 → 清快照
   │
   └─ 保存历史 → 返回答案
 ```
@@ -188,10 +190,10 @@ askflow/
 | **界面角色隔离** | 管理员仅进管理后台、普通用户仅进对话界面（路由守卫强制，无互跳入口） |
 | **可替换后端** | 存储/向量/对象/缓存 四个开关，本地实现与 Docker 服务（MySQL/Milvus/MinIO/Redis）一行切换 |
 | **容器化部署** | docker-compose 编排基础设施；生产 `--profile prod` 可连后端一起容器化 |
-| **工具调用** | 13 个工具，知识库检索(RRF融合) + 联网搜索 + 文档阅读 |
+| **工具调用** | 20 个工具，知识库检索(RRF融合) + 联网搜索 + 文档阅读 + 交付物生成 |
 | **PDF 解析** | MinerU API (VLM/Lite)，自动提取文本/表格/图片 |
 | **多风格回答** | 巴菲特、马斯克、Jobs 等 6 种回答风格（中文名取自 SKILL.md 前置元数据） |
-| **上下文治理** | 超预算自动压缩工具结果或截断旧历史 |
+| **上下文治理** | 按 token 估算预算：加载时压缩/截断历史，运行中压缩旧工具结果，仍超限才熔断（可续跑） |
 | **中断恢复** | 达工具上限后保存状态，"继续"即恢复 |
 | **管理后台** | 配置热更新、用户管理（向量库/日志改用中间件自带控制台） |
 | **图片安全** | 图片资源强制 JWT 鉴权，前端自动注入 token |
@@ -211,7 +213,7 @@ askflow/
 
 ```env
 LLM_API_KEY=sk-...              # 对话模型 API Key
-LLM_BASE_URL=https://...       # 对话模型地址
+LLM_BASE_URL=https://...       # 对话模型地址（任意 OpenAI 兼容端点均可）
 LLM_MODEL=deepseek-v4-...
 
 EMBED_API_KEY=sk-...   # 嵌入模型 API Key（本地 clip-api 填 sk-local）
@@ -221,6 +223,12 @@ EMBED_DIM=512
 
 MINERU_API_KEY=eyJ...             # PDF 解析 API Key
 ```
+
+> **对话端点**：只要兼容 OpenAI Chat Completions 即可，例如 Command Code Provider API
+> （`LLM_BASE_URL=https://api.commandcode.ai/provider/v1`，模型 id 形如 `deepseek/deepseek-v4-flash`）。
+>
+> **上下文治理**：`CONTEXT_WINDOW_TOKENS`（token 预算，默认 128000，应与模型窗口匹配）、
+> `CONTEXT_INPUT_RATIO`、`CONTEXT_COMPRESSION_RATIO`；单次输出上限 `AGENT_MAX_OUTPUT_TOKENS`。
 
 ## 许可证
 
