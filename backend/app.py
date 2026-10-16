@@ -171,9 +171,13 @@ if __name__ == "__main__":
     _port = int(_os2.environ.get("PORT", "11000"))
     _wait_bind_free(_port)
     _workers = int(conf.app_workers or 1)
-    if _workers > 1:
-        # 多 worker 走 supervisor + import string，拿不到 Server 实例，
-        # 由 uvicorn 自己为每个子进程打印 "Uvicorn running on ..."。
-        uvicorn.run("app:app", host="0.0.0.0", port=_port, workers=_workers)
-    else:
-        _ReadyServer(uvicorn.Config(app, host="0.0.0.0", port=_port), _port).run()
+    try:
+        if _workers > 1:
+            # 多 worker 走 supervisor + import string，拿不到 Server 实例，
+            # 由 uvicorn 自己为每个子进程打印 "Uvicorn running on ..."。
+            uvicorn.run("app:app", host="0.0.0.0", port=_port, workers=_workers)
+        else:
+            _ReadyServer(uvicorn.Config(app, host="0.0.0.0", port=_port), _port).run()
+    except KeyboardInterrupt:
+        # Ctrl+C 正常停机：uvicorn 已打印 "Finished server process"，无需抛回溯
+        logger.info("接收到中断信号，服务已停止")
