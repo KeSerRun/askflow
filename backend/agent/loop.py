@@ -30,6 +30,7 @@ from infra.util.logger import log_llm_input, logger
 
 from .checkpoint import CheckpointStore
 from .context import SystemContext
+from .governor import compress_messages
 from .state import (
     GraphState,
     assistant_message,
@@ -392,6 +393,25 @@ class ToolLoop:
         except Exception:
             pass
 
+    def _try_compress_context(self, state: dict) -> bool:
+        """运行中预算超限时压缩较旧工具结果，压缩后达标返回 True。
+
+        仅在超限源于字符预算（迭代次数未达上限）时有意义——迭代达限时压缩
+        无效，直接返回 False 交给上层熔断。压缩就地改写 messages，不影响
+        已落库的历史（被压缩的消息都在 saved_idx 之前）。
+        """
+        max_iter = state.get("max_iterations") or 15
+        if (state.get("iteration") or 0) >= max_iter:
+            return False
+        try:
+            ratio = float(getattr(self.cfg, "context_compression_ratio", 0.3))
+        except (TypeError, ValueError):
+            ratio = 0.3
+        # 只压工具结果，口径与加载时压缩一致（再折半）
+        ratio = min(max(ratio * 0.5, 0.05), 1.0)
+        changed = compress_messages(state.get("messages", []), compression_ratio=ratio)
+        return changed and budget_ok(state)
+
     # ── 图节点：agent ──
 
     def _agent_node(self, state: dict, config: RunnableConfig) -> dict:
@@ -406,12 +426,20 @@ class ToolLoop:
             return {"next_action": "finish"}
 
         if not budget_ok(state):
-            logger.warning(f"tool-loop 达到上限/预算 (iter={state.get('iteration')})")
-            # 达限不清 checkpoint：保留快照，允许后续“继续/续跑”
-            updates = dict(state)
-            updates["final_answer"] = "已达单次工具调用上限，如已有足够信息可直接给出最终答案。"
-            updates["next_action"] = "finish"
-            return updates
+            # 先尝试压缩旧工具结果腾预算；仍超限才熔断
+            if self._try_compress_context(state):
+                logger.info(
+                    f"tool-loop 运行中压缩上下文后继续 "
+                    f"(iter={state.get('iteration')}, "
+                    f"used={total_message_chars(state)})"
+                )
+            else:
+                logger.warning(f"tool-loop 达到上限/预算 (iter={state.get('iteration')})")
+                # 达限不清 checkpoint：保留快照，允许后续“继续/续跑”
+                updates = dict(state)
+                updates["final_answer"] = "已达单次工具调用上限，如已有足够信息可直接给出最终答案。"
+                updates["next_action"] = "finish"
+                return updates
 
         # 上下文使用情况事件（前端展示 已用/最大窗口）
         _cw = state.get("context_window_chars") or 40000

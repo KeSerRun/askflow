@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from agent import ToolLoop
 from agent.checkpoint import CheckpointStore
 from agent.context import SystemContext
+from agent.state import budget_ok
 from core.models import ChatResponse, ChatStreamEvent
 from infra.adapters.storage import SqliteRepo
 from modules.tools import ToolService
@@ -149,6 +150,34 @@ class AgentGraphTest(unittest.TestCase):
             self.assertIsNone(loop.resume_from_checkpoint("nope"))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_running_compression_frees_budget(self):
+        # 超字符预算：运行中压缩旧工具结果后达标，避免提前熔断
+        loop = _loop(_SCRIPT, max_iter=5)
+        long = "a" * 1000
+        state = {
+            "messages": [
+                {"role": "tool", "tool_call_id": str(i), "content": long}
+                for i in range(6)
+            ],
+            "iteration": 1,
+            "max_iterations": 5,
+            "context_window_chars": 5000,
+        }
+        self.assertFalse(budget_ok(state))
+        self.assertTrue(loop._try_compress_context(state))
+        self.assertTrue(budget_ok(state))
+
+    def test_running_compression_skipped_at_iter_limit(self):
+        # 迭代达限时压缩无效，直接返回 False 交给上层熔断
+        loop = _loop(_SCRIPT, max_iter=1)
+        state = {
+            "messages": [{"role": "tool", "tool_call_id": "1", "content": "a" * 1000}],
+            "iteration": 1,
+            "max_iterations": 1,
+            "context_window_chars": 10,
+        }
+        self.assertFalse(loop._try_compress_context(state))
 
     def test_temperature_from_config(self):
         # 配置缺失 → 回退 0.3

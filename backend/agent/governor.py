@@ -1,7 +1,44 @@
-"""上下文压缩：归档原历史，压缩工具调用结果后写回。"""
+"""上下文压缩：归档原历史，压缩工具调用结果后写回。
+
+两类入口：
+- ``compress_history`` / ``truncate_history``：加载历史时对持久化历史做治理；
+- ``compress_messages``：工具循环运行中，就地对扁平的 messages 列表做轻量压缩。
+
+压缩时保证 **不切断 Markdown 图片链接**（``![图](url)``），图片 URL 逐字保留。
+"""
 from __future__ import annotations
 
+import re
+
 from infra.util.logger import logger
+
+_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+
+
+def _image_safe_cut(text: str, cut: int, start: int = 0) -> int:
+    """把切割点后移出 Markdown 图片链接，避免 URL 被截断。
+
+    当 ``cut`` 落在 ``![alt](url)`` span 内部时返回该 span 末尾，否则原样返回。
+    """
+    for m in _IMAGE_RE.finditer(text, start):
+        if m.start() >= cut:
+            break
+        if m.start() < cut < m.end():
+            return m.end()
+    return cut
+
+
+def _compress_tool_content(content: str, compression_ratio: float) -> str:
+    """按 4 等分保留每段前 ``compression_ratio`` 比例，且不切断图片链接。"""
+    bk_len = max(1, len(content) // 4)
+    parts = []
+    for i in range(4):
+        start = i * bk_len
+        end = len(content) if i == 3 else (i + 1) * bk_len
+        keep = max(1, int((end - start) * compression_ratio))
+        cut = _image_safe_cut(content, start + keep, start)
+        parts.append(content[start:cut])
+    return "".join(parts)
 
 
 def _archive(data_store: object, session_id: str, history: list, label: str):
@@ -20,7 +57,7 @@ def compress_history(
 ) -> bool:
     """压缩会话历史中的工具调用结果。
 
-    将每条 turn 中的 tool 消息 content 按 4 等分 + ratio 截断，写回原文件。
+    将每条 turn 中的 tool 消息 content 按 4 等分 + ratio 截断（不切断图片链接），写回原文件。
 
     Args:
         data_store: 历史服务实例（HistoryService）。
@@ -61,13 +98,7 @@ def compress_history(
                 content = msg["content"]
                 if len(content) < 200:
                     continue
-                bk_len = max(1, len(content) // 4)
-                parts = []
-                for i in range(4):
-                    block = content[i * bk_len : (i + 1) * bk_len]
-                    keep = max(1, int(len(block) * compression_ratio))
-                    parts.append(block[:keep])
-                new_content = "".join(parts)
+                new_content = _compress_tool_content(content, compression_ratio)
                 saved_chars += len(content) - len(new_content)
                 msg["content"] = new_content
                 compressed_count += 1
@@ -147,3 +178,42 @@ def truncate_history(
         f"剩余 {len(keep)} 条"
     )
     return True
+
+
+def compress_messages(
+    messages: list,
+    compression_ratio: float = 0.3,
+    keep_recent: int = 4,
+    min_chars: int = 200,
+) -> bool:
+    """就地压缩扁平 messages 中较早的工具结果（不动最近 ``keep_recent`` 条）。
+
+    与 :func:`compress_history` 的区别：这里操作的是工具循环运行中的
+    OpenAI 格式消息列表，只改写 ``role=tool`` 消息的 content，保持角色 /
+    顺序 / ``tool_call_id`` 配对不变，因此压缩后仍是合法的 LLM 输入。
+    用于在单次运行中腾出上下文预算，避免直接熔断提前结束。
+
+    Args:
+        messages: OpenAI 格式消息列表（就地修改）。
+        compression_ratio: 每段保留比例。
+        keep_recent: 末尾保留不压缩的消息条数（保护当前回合的上下文）。
+        min_chars: 小于该长度的工具结果跳过（压缩无意义）。
+
+    Returns:
+        是否发生了压缩。
+    """
+    if not messages:
+        return False
+    guard = max(0, len(messages) - keep_recent)
+    changed = False
+    for msg in messages[:guard]:
+        if not isinstance(msg, dict) or msg.get("role") != "tool":
+            continue
+        content = msg.get("content")
+        if not isinstance(content, str) or len(content) < min_chars:
+            continue
+        new_content = _compress_tool_content(content, compression_ratio)
+        if len(new_content) < len(content):
+            msg["content"] = new_content
+            changed = True
+    return changed
