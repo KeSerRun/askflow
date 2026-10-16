@@ -35,6 +35,7 @@
                 </div>
               </div>
               <div class="kb-actions">
+                <n-button size="tiny" quaternary type="primary" @click="openKbDocs(kb)">详情</n-button>
                 <n-button size="tiny" quaternary type="primary" @click="editKb(kb)">编辑</n-button>
                 <n-popconfirm
                   :show="kbDeleting === kb.name"
@@ -137,10 +138,15 @@
             <n-button size="small" quaternary @click="loadSystemDocs">刷新</n-button>
           </template>
 
-          <n-input
-            v-model:value="systemKeyword" placeholder="搜索文件名 / 知识库" clearable
-            style="width: 240px; margin-bottom: 12px" @keydown.enter="searchSystemDocs"
-          />
+          <n-space align="center" :wrap="true" style="margin-bottom: 12px">
+            <n-tag v-if="systemPartition" size="small" closable @close="clearSystemScope">
+              仅看 {{ systemPartition }}
+            </n-tag>
+            <n-input
+              v-model:value="systemKeyword" placeholder="搜索文件名 / 知识库" clearable
+              style="width: 240px" @keydown.enter="searchSystemDocs"
+            />
+          </n-space>
 
           <n-data-table
             v-if="store.systemDocs.length"
@@ -148,7 +154,7 @@
             :bordered="false" :single-line="true" size="small" :pagination="false"
           />
           <n-empty
-            v-else :description="systemKeyword ? '没有匹配的文档' : '暂无已入库文档'"
+            v-else :description="systemEmptyText"
             style="padding: 20px 0"
           />
           <n-space v-if="store.systemDocsTotal > 0" justify="center" style="margin-top: 16px">
@@ -205,7 +211,8 @@
             </n-text>
           </n-space>
 
-          <n-skeleton v-if="mdLoading" text :repeat="3" />
+          <!-- 仅首次加载（尚无内容）时显示骨架屏；后续嵌入/移除触发的重载必须保留旧内容，否则整页闪一下 -->
+          <n-skeleton v-if="mdLoading && !mdResult" text :repeat="3" />
           <n-empty v-else-if="!mdResult" description="选择文档后加载，MD 将按页展示并标记每页内的切块" style="padding: 24px 0" />
           <n-empty v-else-if="!mdResult.available" :description="mdResult.reason || '无法按页展示'" style="padding: 24px 0" />
 
@@ -421,14 +428,17 @@ const mdSource = ref(null)
 const mdPartition = ref(null)      // 文档所属知识库（决定去哪个分区读解析产物）
 const mdResult = ref(null)
 const mdLoading = ref(false)
-// 文档下拉：跟随「文档管理」当前选中的知识库，避免两个选择器各说各话
-const mdDocOptions = computed(() => {
-  if (!mdPartition.value) return []
-  if (mdPartition.value === uploadPartition.value) {
-    return (store.systemDocs || []).map(d => ({ label: d.name, value: d.name }))
+// 文档下拉：按「文档视图」自己的知识库单独取，不再依赖「文档管理」选了哪个库
+const mdDocOptions = ref([])
+async function loadMdDocOptions() {
+  if (!mdPartition.value) { mdDocOptions.value = []; return }
+  try {
+    mdDocOptions.value = await store.fetchKbDocOptions(mdPartition.value)
+  } catch (e) {
+    mdDocOptions.value = []
+    message.error(e.message)
   }
-  return []
-})
+}
 const markedCount = (pg) => (pg.segments || []).filter(s => s.marked).length
 const imgUrl = (imgPath) => {
   const q = new URLSearchParams({ token: userStore.accessToken || '' })
@@ -436,12 +446,15 @@ const imgUrl = (imgPath) => {
   return `/api/documents/image/${encodeURIComponent(mdResult.value?.stem || '')}/${imgPath}?${q}`
 }
 
-/** 切换文档视图的知识库：同步文档列表并重载视图 */
+/** 切换文档视图的知识库：清空旧文档与视图；选项由 watch(mdPartition) 拉取 */
 function onMdPartitionChange(v) {
   mdPartition.value = v
   mdSource.value = null
   mdResult.value = null
 }
+
+// 知识库一变就重新取该库的文档名（与「文档管理」的上传选择互不相干）
+watch(mdPartition, loadMdDocOptions, { immediate: true })
 
 async function loadMdView() {
   if (!mdSource.value || !mdPartition.value) return
@@ -609,14 +622,16 @@ function openDetail(row) {
   showTextModal.value = true
 }
 
-// ── 系统文档（跨知识库，独立于上方上传面板的知识库选择） ──
+// ── 系统文档（默认跨知识库；可由知识库卡片的「详情」限定到单个库） ──
 const systemPage = ref(1)
 const systemPageSize = ref(20)
 const systemKeyword = ref('')
+const systemPartition = ref(null)      // 非空 = 只看该知识库的已入库文档
 const deletingSources = ref(new Set())
 async function loadSystemDocs() {
   try {
     await store.fetchSystemDocs({
+      partition: systemPartition.value || undefined,
       keyword: systemKeyword.value || undefined,
       page: systemPage.value,
       page_size: systemPageSize.value,
@@ -625,6 +640,24 @@ async function loadSystemDocs() {
 }
 function searchSystemDocs() { systemPage.value = 1; loadSystemDocs() }
 function changeSystemSize(size) { systemPageSize.value = size; systemPage.value = 1; loadSystemDocs() }
+function clearSystemScope() { systemPartition.value = null; searchSystemDocs() }
+
+const systemEmptyText = computed(() => {
+  if (systemKeyword.value) return '没有匹配的文档'
+  if (systemPartition.value) return `知识库「${systemPartition.value}」暂无已入库文档`
+  return '暂无已入库文档'
+})
+
+/** 知识库卡片「详情」：跳到文档管理，只看该库的已入库文档 */
+function openKbDocs(kb) {
+  systemPartition.value = kb.name
+  systemKeyword.value = ''
+  systemPage.value = 1
+  store.systemDocs = []
+  store.systemDocsTotal = 0
+  // 切页签由 watch(tab) → handleTab 统一触发加载，这里不再重复请求
+  tab.value = 'system'
+}
 
 // ── 上传队列：MinIO 原始文件（文件维，独立分页） ──
 const rawPage = ref(1)
@@ -809,8 +842,11 @@ async function removeRawFile(source) {
 function handleTab(name) {
   if (name === 'knowledge_bases') loadKnowledgeBases()
   else if (name === 'system') { loadSystemDocs(); loadRawFiles() }
-  else if (name === 'mdview' && !mdPartition.value && uploadPartition.value) {
-    mdPartition.value = uploadPartition.value   // 文档视图默认跟随当前知识库
+  else if (name === 'mdview') {
+    if (!mdPartition.value && uploadPartition.value) {
+      mdPartition.value = uploadPartition.value   // 文档视图默认跟随当前知识库
+    }
+    loadMdDocOptions()   // 每次进页签都刷新文档名，避免新上传的文档不出现在下拉里
   }
 }
 watch(tab, (name) => handleTab(name))

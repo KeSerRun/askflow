@@ -16,8 +16,9 @@ class FakeVector:
 
     def __init__(self):
         self._sources: set = set()
+        self.deleted: list[tuple] = []      # (sources, partition)
 
-    def store_documents_from_dir(self, directory, partition="__system__"):
+    def store_documents_from_dir(self, directory, partition):
         source = os.path.basename(directory)
         self._sources.add(source)
         chunk = os.path.join(os.path.dirname(directory), "chunk_out", os.path.splitext(source)[0])
@@ -27,6 +28,7 @@ class FakeVector:
         return sorted(self._sources)
 
     def delete_by_sources(self, sources, partition=None):
+        self.deleted.append((list(sources), partition))
         for s in sources:
             self._sources.discard(os.path.basename(s))
 
@@ -64,6 +66,22 @@ class DocumentServiceTest(unittest.TestCase):
         self.svc.upload("__system__", "a.pdf", b"%PDF")
         self.svc.upload("__system__", "a.pdf", b"%PDF-new")
         self.assertEqual(self.vector.get_sources(), ["a.pdf"])
+
+    def test_forget_source_scoped_to_partition(self):
+        """回归：删向量必须带 partition —— 否则同名文件会跨知识库误删。
+
+        场景：库A 与 库B 都有 report.pdf，在 库A 重传时应只清 库A 的向量。
+        """
+        self.svc.forget_source("库A", "report.pdf")
+        self.assertEqual(self.vector.deleted, [(["report.pdf"], "库A")])
+
+    def test_upload_overwrite_only_touches_its_own_kb(self):
+        """重传同库文件时，删向量必须限定在该库（purge 只删文件、不动向量）。"""
+        self.svc.upload("库A", "same.pdf", b"%PDF")
+        self.vector.deleted.clear()
+        self.svc.upload("库A", "same.pdf", b"%PDF-2")
+        self.assertEqual([p for _, p in self.vector.deleted], ["库A"])
+        self.assertEqual(self.vector.deleted, [(["same.pdf"], "库A")])
 
     # ── MinerU 解析图片读取（回归：曾写死 __system__ 导致知识库文档图片 404） ──
 

@@ -21,6 +21,8 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+import uvicorn
+
 from core.compositor import get_container
 from core.http_errors import register_exception_handlers
 from core.middleware import register_middlewares
@@ -56,7 +58,9 @@ async def lifespan(_app: FastAPI):
         container.config.auth_superuser_users,
         container.config.auth_superuser_passwords,
     )
-    logger.info(f"启动完成：容器就绪，超级用户已同步（新建 {created} 个）")
+    # 注意：uvicorn 的顺序是「先跑 lifespan（这里）→ 再 bind 端口」。所以此处只能
+    # 说「初始化完成」；真正开始监听的提示由 __main__ 的 _Server.startup 钩子打印。
+    logger.info(f"初始化完成：容器就绪，超级用户已同步（新建 {created} 个），即将监听端口")
     yield
 
 
@@ -116,6 +120,7 @@ try:
 except Exception:  # noqa: BLE001
     pass
 
+
 def _wait_bind_free(port: int, timeout: float = 30.0) -> None:
     """等待端口可绑定后再启动服务。
 
@@ -138,17 +143,37 @@ def _wait_bind_free(port: int, timeout: float = 30.0) -> None:
             probe.close()
 
 
+class _ReadyServer(uvicorn.Server):
+    """在**端口绑定成功之后**才打印就绪提示。
+
+    ``Server.startup()`` 内部顺序：lifespan.startup → 建 socket 并 bind →
+    打印 "Uvicorn running on ..." → ``self.started = True``。绑定失败（EADDRINUSE）
+    会直接抛异常，后面的日志不会打——所以这里能打印，就说明真的在监听了。
+    """
+
+    def __init__(self, config, ready_port: int):
+        super().__init__(config)
+        self._ready_port = ready_port
+
+    async def startup(self, sockets=None):
+        await super().startup(sockets=sockets)
+        if self.started:
+            logger.info(
+                f"服务已就绪：主页地址 http://127.0.0.1:{self._ready_port} "
+                f"(Press CTRL+RIGHT-CLICK to enter)"
+            )
+
+
 if __name__ == "__main__":
     import os as _os2
 
-    import uvicorn
-
     # 端口：优先 PORT 环境变量（便于换端口解决浏览器权限记录），默认 11000
     _port = int(_os2.environ.get("PORT", "11000"))
-    logger.info(f"主页地址: http://127.0.0.1:{_port} (Press CTRL+RIGHT-CLICK to enter)")
     _wait_bind_free(_port)
     _workers = int(conf.app_workers or 1)
     if _workers > 1:
+        # 多 worker 走 supervisor + import string，拿不到 Server 实例，
+        # 由 uvicorn 自己为每个子进程打印 "Uvicorn running on ..."。
         uvicorn.run("app:app", host="0.0.0.0", port=_port, workers=_workers)
     else:
-        uvicorn.run(app, host="0.0.0.0", port=_port)
+        _ReadyServer(uvicorn.Config(app, host="0.0.0.0", port=_port), _port).run()

@@ -61,7 +61,7 @@ class _OwnSession:
     def __enter__(self):
         return self._session
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(self, exc_type, exc, _tb):
         try:
             if exc_type is None:
                 self._session.commit()

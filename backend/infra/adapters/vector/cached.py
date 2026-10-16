@@ -1,7 +1,7 @@
 """infra.adapters.vector.cached —— 给向量库加"读缓存、写失效"。
 
 缓存读取（分区来源列表 / 数量 / 元数据）；写操作（入库 / 删除）后版本自增，旧缓存自然失效。
-未覆写的属性/方法（dense_vectors / dimension / search ...）经 __getattr__ 透传。
+未覆写的属性/方法（dimension / search ...）经 __getattr__ 透传。
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ class CachedVectorStore:
         self._bump()
         return result
 
-    def store_documents_from_dir(self, directory, partition: str = "__system__"):
+    def store_documents_from_dir(self, directory, partition: str):
         """入库（写操作，结束后使读缓存失效）。
 
         ``partition`` 为知识库名（向量库 partition 字段值），需与底层实现保持一致。
@@ -84,6 +84,12 @@ class CachedVectorStore:
 
     def delete_by_sources(self, sources, partition=None):
         result = self._store.delete_by_sources(sources, partition)
+        self._bump()
+        return result
+
+    def delete_by_doc_ids(self, doc_ids, partition=None):
+        """按 doc_id 删除（文档视图「移除」用）—— 必须 bump，否则 md_view 会读到 30s 旧缓存。"""
+        result = self._store.delete_by_doc_ids(doc_ids, partition)
         self._bump()
         return result
 

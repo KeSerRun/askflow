@@ -1,10 +1,10 @@
 """modules.database.service —— 管理后台「向量库 / 文档」用例。
 
 供管理后台查看与维护向量库：
-  - 统计概览（切块/向量/分区/来源/类型/嵌入信息）；
+  - 统计概览（切块/分区/来源/类型/嵌入信息）；
   - 切块浏览（分页 + 过滤）；
-  - 系统级文档（``__system__`` 分区）的列出 / 上传（后台任务）/ 状态；
-  - 删除 / 批量删除（任意分区的向量 + 原文件 + chunk 产物）。
+  - 知识库文档的列出（跨库 / 按库）/ 上传（后台任务）/ 状态；
+  - 删除 / 批量删除（任意知识库分区的向量 + 原文件 + chunk 产物）。
 
 依赖组合根注入的 ``vector_store`` / ``document_service`` / ``object_store``。
 """
@@ -59,13 +59,12 @@ class DatabaseService:
     # ── 统计概览 ──
 
     def stats(self) -> dict:
-        """向量库统计：切块/向量总数、按来源分布、类型、嵌入信息（默认只使用 __system__ 分区）。"""
+        """向量库统计：切块总数、按来源分布、切块类型、嵌入信息（统计**全部**知识库分区）。"""
         vs = self._vector
         if vs is None or not getattr(vs, "is_available", lambda: True)():
             return {"available": False, "message": "向量存储未初始化或连接失败"}
 
         metadata = vs.metadata or []
-        vectors = getattr(vs, "dense_vectors", []) or []
 
         by_source: dict = {}
         for m in metadata:
@@ -78,7 +77,6 @@ class DatabaseService:
             "embedding_model": getattr(vs, "embedding_model", None),
             "embedding_dimension": getattr(vs, "dimension", None),
             "total_chunks": len(metadata),
-            "total_vectors": len(vectors),
             "sources_count": len(by_source),
             "chunk_types": sorted({m.get("chunk_type", "") for m in metadata if m.get("chunk_type")}),
             "by_source": {

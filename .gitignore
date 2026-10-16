@@ -128,3 +128,5 @@ dist/
 *.lock
 IDEA.md
 *.exe
+.commandcode/
+.vscode/

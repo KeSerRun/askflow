@@ -394,12 +394,19 @@ class MilvusVectorStore:
         self._client.delete(self._name, filter=" and ".join(conds))
         self._client.flush(self._name)
 
-    def delete_by_doc_ids(self, doc_ids: list[str]) -> None:
-        """按向量主键 doc_id 删除指定切块。"""
+    def delete_by_doc_ids(self, doc_ids: list[str], partition: str | None = None) -> None:
+        """按向量主键 doc_id 删除指定切块；``partition`` 非空时只删该知识库下的。
+
+        ``doc_id`` 是块内容的 md5，作主键全局唯一；``partition`` 只作额外约束，
+        与 :meth:`delete_by_sources` 保持同签名（装饰器会透传该参数）。
+        """
         ids = [str(i) for i in doc_ids or [] if str(i)]
         if not ids:
             return
-        self._client.delete(self._name, filter=f'doc_id in {ids!r}')
+        conds = [f'doc_id in {ids!r}']
+        if partition:
+            conds.append(f'partition == "{_esc(partition)}"')
+        self._client.delete(self._name, filter=" and ".join(conds))
         self._client.flush(self._name)
 
     def count(self) -> int:
@@ -437,17 +444,12 @@ class MilvusVectorStore:
             return []
         return out
 
-    @property
-    def dense_vectors(self) -> list:
-        """兼容字段：Milvus 侧不导出向量，保留空列表（total_vectors 由 metadata 长度计）。"""
-        return []
-
     # ── 兼容别名 ──
 
     def get_documents(self) -> list[str]:
         return self.get_sources()
 
-    def store_documents_from_dir(self, directory, partition: str = "__system__") -> None:
+    def store_documents_from_dir(self, directory, partition: str) -> None:
         from infra.adapters.pdf.document_loader import process_documents_from_dir
 
         docs = process_documents_from_dir(directory)

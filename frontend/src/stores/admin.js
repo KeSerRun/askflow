@@ -234,6 +234,14 @@ export const useAdminStore = defineStore('admin', () => {
     return res.data
   }
 
+  /** 只取某知识库的文档名，供「文档视图」下拉用 —— 不污染 systemDocs（那是文档管理的全库列表） */
+  async function fetchKbDocOptions(partition) {
+    const res = await apiCall(() =>
+      axios.get('/api/admin/database/system_docs', { params: { partition, page_size: 200 } })
+    )
+    return (res.data.documents || []).map(d => ({ label: d.name, value: d.name }))
+  }
+
   const systemFiles = ref([])
   const systemFilesTotal = ref(0)
   async function fetchSystemFiles(params = {}) {
@@ -463,7 +471,7 @@ export const useAdminStore = defineStore('admin', () => {
     usersData, fetchUsers, createUser, deleteUser, changeUserRole, resetUserPassword,
     dbStats, dbChunks, systemDocs, systemDocsTotal,
     fetchDbStats, fetchDbChunks, fetchDbMdView, mdviewEmbed, mdviewRemove, fetchChunkParent,
-    fetchSystemDocs, fetchSystemFiles, systemFiles, systemFilesTotal,
+    fetchSystemDocs, fetchKbDocOptions, fetchSystemFiles, systemFiles, systemFilesTotal,
     uploadSystemDocs, fetchUploadTask,
     deleteDocument, deleteSystemRawFile,
     sessionsData, fetchSessions, fetchSessionHistory, clearSessionHistory, deleteSessionAdmin,

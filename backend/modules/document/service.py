@@ -92,73 +92,77 @@ class DocumentService:
         """按扩展名判断是否为图片附件。"""
         return os.path.splitext(name)[1].lower() in _IMAGE_EXTS
 
-    def _upload_key(self, user: str, filename: str) -> str:
-        return f"uploads/{str(user)}/{os.path.basename(filename)}"
+    def _upload_key(self, partition: str, filename: str) -> str:
+        return f"uploads/{str(partition)}/{os.path.basename(filename)}"
 
-    # ── 保存（系统文档） ──
+    # ── 保存（知识库文档） ──
 
-    def save_file(self, user: str, filename: str, data: bytes) -> dict:
+    def save_file(self, partition: str, filename: str, data: bytes) -> dict:
         """保存单个原始文件（不解析，写入对象存储）。
 
         Returns:
             dict: ``{"filename", "size", "path"}``（path 为对象键）。
         """
         name = os.path.basename(filename)
-        rel = self._upload_key(user, name)
+        rel = self._upload_key(partition, name)
         self._files.put(rel, data)
         return {"filename": name, "size": len(data), "path": rel}
 
-    # ── 清理（系统文档） ──
+    # ── 清理（知识库文档） ──
 
-    def purge(self, user: str, sources: list | None = None) -> None:
+    def purge(self, partition: str, sources: list | None = None) -> None:
         """清理原文件与其 chunk 产物。
 
         - ``sources=None``: 清空整个分区（含全部文件与 chunk_out/）
         - ``sources=[...]``: 仅清指定文件及其 ``chunk_out/{stem}/``
         """
         if sources is None:
-            self._files.delete_prefix(f"uploads/{str(user)}")
+            self._files.delete_prefix(f"uploads/{str(partition)}")
             return
 
         for src in sources:
             name = os.path.basename(src)
-            self._files.delete(self._upload_key(user, name))
+            self._files.delete(self._upload_key(partition, name))
             stem = os.path.splitext(name)[0]
-            self._files.delete_prefix(f"uploads/{str(user)}/chunk_out/{stem}")
+            self._files.delete_prefix(f"uploads/{str(partition)}/chunk_out/{stem}")
 
-    # ── 入库（系统文档） ──
+    # ── 入库（知识库文档） ──
 
-    def forget_source(self, user: str, filename: str) -> None:
-        """删除某来源的向量（不动文件）。"""
-        self._vector.delete_by_sources([os.path.basename(filename)])
+    def forget_source(self, partition: str, filename: str) -> None:
+        """删除某来源的向量（不动文件）。
 
-    def index_file(self, user: str, filename: str) -> None:
-        """解析并入库单个文件（进 ``user`` 指定的知识库分区），chunk 产物上传回对象存储。
+        必须带上 ``partition``：否则两个知识库有同名文件时，在其中一个库重传/删除
+        会把另一个库的向量一起清掉。
+        """
+        self._vector.delete_by_sources([os.path.basename(filename)], partition)
+
+    def index_file(self, partition: str, filename: str) -> None:
+        """解析并入库单个文件（进 ``partition`` 指定的知识库分区），chunk 产物上传回对象存储。
 
         把原始文件物化到系统临时目录 → 本地解析/向量化 →
         产物上传回对象存储 → 清理临时物化文件。
         """
         name = os.path.basename(filename)
-        rel = self._upload_key(user, name)
+        rel = self._upload_key(partition, name)
         proxy = self._files.local_materialize(rel)
         if proxy is None:
             raise NotFound(f"原文件未找到: {name}")
 
-        self._vector.store_documents_from_dir(proxy, user)
+        self._vector.store_documents_from_dir(proxy, partition)
 
         stem = Path(proxy).stem
         co = Path(proxy).parent / "chunk_out" / stem
         if co.is_dir():
-            self._files.upload_subtree(str(co), f"uploads/{str(user)}/chunk_out/{stem}")
+            self._files.upload_subtree(str(co), f"uploads/{str(partition)}/chunk_out/{stem}")
         self._files.cleanup_materialized(rel)
 
-    def upload(self, user: str, filename: str, data: bytes) -> UploadResult:
+    def upload(self, partition: str, filename: str, data: bytes) -> UploadResult:
         """保存 + 覆盖入库（先删同名向量与旧产物）。"""
         name = os.path.basename(filename)
-        self.forget_source(user, name)
-        self.purge(user, [name])
-        self.save_file(user, name, data)
-        self.index_file(user, name)
+        self.forget_source(partition, name)
+        self.purge(partition, [name])
+        self.save_file(partition, name, data)
+        self.index_file(partition, name)
         return UploadResult(filename=name, sources=[name])
 
     # ── 会话附件暂存（对话页：只暂存，不解析/不入库） ──
